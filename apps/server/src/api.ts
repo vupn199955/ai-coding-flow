@@ -29,13 +29,24 @@ import { listDirectories } from './projects';
 
 const createPlanSchema = z
   .object({
-    name: z.string().trim().min(1).max(200),
+    name: z.string().trim().max(200).default(''),
     projectId: z.string().min(1).optional(),
     repositoryPath: z.string().min(1).optional(),
     taskPath: z.string().min(1).optional(),
+    taskText: z
+      .string()
+      .min(1)
+      .max(512_000)
+      .refine((text) => text.trim().length > 0, 'Enter task instructions.')
+      .optional(),
     taskIds: z.array(z.string().min(1)).max(200).optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (input) =>
+      input.taskText === undefined || (input.taskPath === undefined && input.taskIds === undefined),
+    'Choose task text or Markdown files, not both.',
+  );
 
 @Catch()
 class ApiErrors implements ExceptionFilter {
@@ -101,6 +112,9 @@ class ApiController {
         .strict()
         .parse(body),
     );
+  }
+  @Delete('projects/:id') removeProject(@Param('id') id: string) {
+    return this.flow.removeProject(id);
   }
   @Get('tasks') tasks(@Query('path') taskPath?: string) {
     return this.flow.previewTasks(taskPath);

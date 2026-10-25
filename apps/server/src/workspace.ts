@@ -113,11 +113,6 @@ export async function validateRepository(repositoryPath: string): Promise<string
   const root = await git(directory, ['rev-parse', '--show-toplevel']);
   if ((await realpath(root)) !== directory) throw new Error(`Choose the repository root: ${root}`);
   await git(directory, ['rev-parse', '--verify', 'HEAD']);
-  const status = await git(directory, ['status', '--porcelain']);
-  if (status)
-    throw new Error(
-      'The repository has uncommitted changes. Commit or stash them before creating a run so the isolated workspace has an exact starting point.',
-    );
   return directory;
 }
 

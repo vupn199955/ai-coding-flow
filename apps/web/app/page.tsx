@@ -101,6 +101,7 @@ export default function Home() {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [showAddProject, setShowAddProject] = useState(false);
   const [removeId, setRemoveId] = useState<string | null>(null);
+  const [removeProjectId, setRemoveProjectId] = useState<string | null>(null);
   const requestedCatalogs = useRef(new Set<string>());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -121,8 +122,8 @@ export default function Home() {
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    if (showNewRun || showAddProject || removeId) setNotice(null);
-  }, [showNewRun, showAddProject, removeId]);
+    if (showNewRun || showAddProject || removeId || removeProjectId) setNotice(null);
+  }, [showNewRun, showAddProject, removeId, removeProjectId]);
   useEffect(() => {
     if (!notice) return;
     const timer = setTimeout(() => setNotice(null), notice.error ? 8000 : 5000);
@@ -349,23 +350,32 @@ export default function Home() {
             const workflows = state.plans.filter((flow) => flow.projectId === item.id);
             const running = workflows.filter((flow) => flow.status === 'running').length;
             return (
-              <button
-                key={item.id}
-                title={item.repositoryPath}
-                aria-pressed={project?.id === item.id}
-                className={`project-item ${project?.id === item.id ? 'selected' : ''}`}
-                onClick={() => selectProject(item)}
-              >
-                <FolderGit2 size={16} />
-                <span>
-                  <strong>{item.name}</strong>
-                  <small>
-                    {running ? `${running} running · ` : ''}
-                    {workflows.length} workflows
-                  </small>
-                </span>
-                {running > 0 && <span className="local-dot" />}
-              </button>
+              <div className="project-row" key={item.id}>
+                <button
+                  title={item.repositoryPath}
+                  aria-pressed={project?.id === item.id}
+                  className={`project-item ${project?.id === item.id ? 'selected' : ''}`}
+                  onClick={() => selectProject(item)}
+                >
+                  <FolderGit2 size={16} />
+                  <span>
+                    <strong>{item.name}</strong>
+                    <small>
+                      {running ? `${running} running · ` : ''}
+                      {workflows.length} workflows
+                    </small>
+                  </span>
+                  {running > 0 && <span className="local-dot" />}
+                </button>
+                <button
+                  className="icon-button project-delete"
+                  aria-label={`Delete project ${item.name}`}
+                  title={`Delete project ${item.name}`}
+                  onClick={() => setRemoveProjectId(item.id)}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
             );
           })}
           {!state?.projects.length && (
@@ -1173,25 +1183,11 @@ export default function Home() {
                                 </tbody>
                               </table>
                             </div>
-                            <div className="budget-line">
-                              <span>Reported token budget</span>
-                              <strong>
-                                {usage.available ? compactNumber(usage.total) : '—'} /{' '}
-                                {compactNumber(plan.config.limits.maxTokens)}
-                              </strong>
-                            </div>
-                            <div className="progress-track">
-                              <span
-                                style={{
-                                  width: `${Math.min(100, (usage.total / plan.config.limits.maxTokens) * 100)}%`,
-                                }}
-                              />
-                            </div>
                             <p className="footnote">
-                              Token limits are enforced as usage arrives and may overshoot during an
-                              in-flight request. This view is an activity ledger, not an invoice;
-                              subscription credits and API billing differ. Nested-agent usage
-                              depends on what the runtime reports.
+                              Token usage is reported without a workflow token limit. This view is
+                              an activity ledger, not an invoice; subscription credits and API
+                              billing differ. Nested-agent usage depends on what the runtime
+                              reports.
                             </p>
                           </div>
                         )}
@@ -1290,7 +1286,7 @@ export default function Home() {
                 selectProject(added);
                 setShowAddProject(false);
               },
-              'Project ready. Configure its checks and task path in Settings.',
+              'Project ready. Configure its checks in Settings, then start a workflow.',
             );
           }}
         />
@@ -1326,6 +1322,40 @@ export default function Home() {
           </div>
         </Modal>
       )}
+      {removeProjectId && (
+        <Modal
+          title={`Delete project ${state?.projects.find((item) => item.id === removeProjectId)?.name || ''}`}
+          description="Delete this project and all its workflows and activity from the dashboard. Active workflows will be stopped first. Repository files, documents, and Git commits stay on disk."
+          onClose={() => setRemoveProjectId(null)}
+        >
+          <div className="modal-actions">
+            <button className="button secondary" onClick={() => setRemoveProjectId(null)}>
+              Keep project
+            </button>
+            <button
+              className="button primary"
+              disabled={Boolean(busy)}
+              onClick={() =>
+                void act(
+                  'remove-project',
+                  async () => {
+                    await api(`/projects/${removeProjectId}`, { method: 'DELETE' });
+                    setSelectedProjectId((current) =>
+                      current === removeProjectId ? null : current,
+                    );
+                    setSelectedId(null);
+                    setRemoveProjectId(null);
+                  },
+                  'Project and all workflows deleted. Repository files and commits retained.',
+                )
+              }
+            >
+              <Trash2 size={15} />
+              Delete project & workflows
+            </button>
+          </div>
+        </Modal>
+      )}
       {showNewRun && state && project && (
         <NewRunModal
           config={project.config}
@@ -1340,7 +1370,9 @@ export default function Home() {
                 body: JSON.stringify({
                   name: input.name,
                   projectId: project.id,
-                  taskPath: input.taskPath,
+                  ...(input.taskText !== undefined
+                    ? { taskText: input.taskText }
+                    : { taskPath: input.taskPath }),
                   ...(input.taskIds ? { taskIds: input.taskIds } : {}),
                 }),
               });
@@ -1450,7 +1482,7 @@ function EmptyWorkspace({
         <div className="flow-top">
           <FileText size={16} />
           <div>
-            <strong>task.md</strong>
+            <strong>Your task</strong>
             <small>Clear acceptance criteria</small>
           </div>
           <span className="flow-file-lines">≡</span>
@@ -1800,7 +1832,9 @@ function SettingsView({
             <div className="section-title compact">
               <div>
                 <h2>Repository & tasks</h2>
-                <p>Use absolute paths to a Git repository and a Markdown task file or directory.</p>
+                <p>
+                  Choose a Git repository. Workflows accept direct text or any Markdown task file.
+                </p>
               </div>
               <FolderGit2 size={20} />
             </div>
@@ -1819,12 +1853,15 @@ function SettingsView({
                 </small>
               </label>
               <label className="form-field">
-                <span>Task file or directory</span>
+                <span>Default task file or directory (optional)</span>
                 <input
                   value={draft.taskPath}
                   onChange={(event) => update('taskPath', event.target.value)}
                   placeholder="/Users/you/projects/my-app/tasks"
                 />
+                <small>
+                  Only used for workflows created from files. No task template is required.
+                </small>
               </label>
             </div>
             <div className="form-grid">
@@ -1944,8 +1981,8 @@ function SettingsView({
               <div>
                 <h2>Run limits</h2>
                 <p>
-                  Bound automatic retries and spending. Reaching a limit preserves progress and asks
-                  for attention.
+                  Bound automatic retries and active runtime. Reaching a limit preserves progress
+                  and asks for attention.
                 </p>
               </div>
               <Clock3 size={20} />
@@ -1998,7 +2035,6 @@ function LimitsFields({
           { key: 'maxReviewRounds', label: 'Review rounds per task', min: 1, max: 50 },
           { key: 'maxFixAttempts', label: 'Check repair limit', min: 1, max: 50 },
           { key: 'maxRunMinutes', label: 'Active runtime (minutes)', min: 1, max: 1440 },
-          { key: 'maxTokens', label: 'Reported token budget', min: 1000, max: 100000000 },
         ] as const
       ).map((field) => (
         <label className="form-field" key={field.key}>
@@ -2159,13 +2195,16 @@ function NewRunModal({
   onCreate: (input: {
     name: string;
     repositoryPath: string;
-    taskPath: string;
+    taskPath?: string;
+    taskText?: string;
     taskIds?: string[];
     start: boolean;
   }) => Promise<void>;
   busy: boolean;
 }) {
   const [name, setName] = useState('');
+  const [source, setSource] = useState<'text' | 'files'>('text');
+  const [taskText, setTaskText] = useState('');
   const repositoryPath = project.repositoryPath;
   const [taskPath, setTaskPath] = useState(config.taskPath);
   const [start, setStart] = useState(!active);
@@ -2176,24 +2215,28 @@ function NewRunModal({
   return (
     <Modal
       title="Start a new workflow"
-      description={`Create a workflow in ${project.name} from a Markdown task or connected plan.`}
+      description={`Describe a task for ${project.name}, or choose Markdown files.`}
       onClose={onClose}
     >
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          if (tasks && !taskIds.length) {
+          if (source === 'files' && tasks && !taskIds.length) {
             setError('Select at least one task.');
             return;
           }
-          void onCreate({ name, repositoryPath, taskPath, start, ...(tasks ? { taskIds } : {}) });
+          void onCreate({
+            name,
+            repositoryPath,
+            start,
+            ...(source === 'text' ? { taskText } : { taskPath, ...(tasks ? { taskIds } : {}) }),
+          });
         }}
       >
         <div className="modal-body">
           <label className="form-field">
-            <span>Run name</span>
+            <span>Run name (optional)</span>
             <input
-              required
               maxLength={200}
               value={name}
               onChange={(event) => setName(event.target.value)}
@@ -2204,70 +2247,101 @@ function NewRunModal({
             <span>Repository path</span>
             <input required value={repositoryPath} readOnly />
             <small>
-              The repository belongs to the selected project. Its working tree must be clean.
+              Workflow commits contain only edits made in its isolated workspace. Local changes can
+              stay in your repository.
             </small>
           </label>
           <label className="form-field">
-            <span>Markdown task file or directory</span>
-            <input
-              required
-              value={taskPath}
+            <span>Task source</span>
+            <select
+              value={source}
               onChange={(event) => {
-                setTaskPath(event.target.value);
-                setTasks(null);
+                setSource(event.target.value as 'text' | 'files');
+                setError('');
               }}
-            />
+            >
+              <option value="text">Type a task</option>
+              <option value="files">Markdown file or directory</option>
+            </select>
           </label>
-          <button
-            className="button secondary small"
-            type="button"
-            disabled={loading}
-            onClick={() => {
-              setLoading(true);
-              setError('');
-              void api<TaskDefinition[]>(`/tasks?path=${encodeURIComponent(taskPath)}`)
-                .then((result) => {
-                  setTasks(result);
-                  setTaskIds(result.map((task) => task.id));
-                })
-                .catch((cause) => setError(cause.message))
-                .finally(() => setLoading(false));
-            }}
-          >
-            {loading ? <LoaderCircle size={14} className="spin" /> : <FileText size={14} />}Preview
-            tasks
-          </button>
+          {source === 'text' ? (
+            <label className="form-field">
+              <span>Task instructions</span>
+              <textarea
+                required
+                rows={7}
+                maxLength={512_000}
+                value={taskText}
+                onChange={(event) => setTaskText(event.target.value)}
+                placeholder="Describe what you want changed…"
+              />
+              <small>Plain text or Markdown, in any format. No task file is needed.</small>
+            </label>
+          ) : (
+            <>
+              <label className="form-field">
+                <span>Markdown task file or directory</span>
+                <input
+                  required
+                  value={taskPath}
+                  onChange={(event) => {
+                    setTaskPath(event.target.value);
+                    setTasks(null);
+                  }}
+                />
+              </label>
+              <button
+                className="button secondary small"
+                type="button"
+                disabled={loading}
+                onClick={() => {
+                  setLoading(true);
+                  setError('');
+                  void api<TaskDefinition[]>(`/tasks?path=${encodeURIComponent(taskPath)}`)
+                    .then((result) => {
+                      setTasks(result);
+                      setTaskIds(result.map((task) => task.id));
+                    })
+                    .catch((cause) => setError(cause.message))
+                    .finally(() => setLoading(false));
+                }}
+              >
+                {loading ? <LoaderCircle size={14} className="spin" /> : <FileText size={14} />}
+                Preview tasks
+              </button>
+              {tasks && (
+                <div className="task-preview">
+                  {tasks.map((task) => (
+                    <label key={task.id}>
+                      <input
+                        type="checkbox"
+                        checked={taskIds.includes(task.id)}
+                        onChange={(event) =>
+                          setTaskIds((current) =>
+                            event.target.checked
+                              ? [...current, task.id]
+                              : current.filter((id) => id !== task.id),
+                          )
+                        }
+                      />
+                      <div>
+                        <strong>{task.title}</strong>
+                        <small>
+                          {task.id}
+                          {task.dependsOn.length ? ` · after ${task.dependsOn.join(', ')}` : ''}
+                        </small>
+                      </div>
+                    </label>
+                  ))}
+                  <p>Required dependencies are included automatically.</p>
+                </div>
+              )}
+            </>
+          )}
           {error && (
             <p className="inline-error" role="alert">
               {error}
             </p>
-          )}
-          {tasks && (
-            <div className="task-preview">
-              {tasks.map((task) => (
-                <label key={task.id}>
-                  <input
-                    type="checkbox"
-                    checked={taskIds.includes(task.id)}
-                    onChange={(event) =>
-                      setTaskIds((current) =>
-                        event.target.checked
-                          ? [...current, task.id]
-                          : current.filter((id) => id !== task.id),
-                      )
-                    }
-                  />
-                  <div>
-                    <strong>{task.title}</strong>
-                    <small>
-                      {task.id}
-                      {task.dependsOn.length ? ` · after ${task.dependsOn.join(', ')}` : ''}
-                    </small>
-                  </div>
-                </label>
-              ))}
-              <p>Required dependencies are included automatically.</p>
-            </div>
           )}
           <div className="run-config-note">
             <Bot size={16} />
@@ -2299,7 +2373,11 @@ function NewRunModal({
           <button className="button secondary" type="button" onClick={onClose}>
             Cancel
           </button>
-          <button className="button primary" type="submit" disabled={busy || !name.trim()}>
+          <button
+            className="button primary"
+            type="submit"
+            disabled={busy || (source === 'text' ? !taskText.trim() : !taskPath.trim())}
+          >
             {busy ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}
             {start ? 'Create & start' : 'Create run'}
           </button>
@@ -2393,8 +2471,8 @@ function Guide({
           <span className="guide-number">02</span>
           <h2>Prepare the repository</h2>
           <p>
-            Use a local Git repository with a clean working tree and at least one commit. Configure
-            the real test and validation commands for that repository.
+            Use a local Git repository with at least one commit. Local changes can stay in place.
+            Configure the real test and validation commands for that repository.
           </p>
           <pre>npm test -- --run{'\n'}npm run typecheck</pre>
           <p>
@@ -2404,13 +2482,14 @@ function Guide({
         </section>
         <section className="settings-card guide-card">
           <span className="guide-number">03</span>
-          <h2>Write a Markdown task</h2>
+          <h2>Describe your task</h2>
           <p>
-            A single file is one task. A directory is a plan. Use dependencies to define the order.
+            Type instructions directly in New workflow, or choose a Markdown file or directory. Any
+            text or Markdown format works. Optional metadata can define dependencies.
           </p>
           <pre>
             {
-              '---\nid: add-users\ndepends_on: []\n---\n\n# Add user creation\n\n## Acceptance criteria\n- Validate the request.\n- Reject duplicate emails.\n- Cover new behavior with unit tests.'
+              'Add user creation. Validate the request, reject duplicate emails, and cover the behavior with unit tests.'
             }
           </pre>
         </section>
@@ -2439,8 +2518,8 @@ function Guide({
         <h2>When a run needs attention</h2>
         <p>
           Open Activity and Checks to see the evidence. Runtime errors, missing information, retry
-          limits, and usage limits preserve the work instead of silently continuing. Adjust the run
-          limits when appropriate, then resume. After a controller restart, active runs return
+          limits, and runtime limits preserve the work instead of silently continuing. Adjust the
+          run limits when appropriate, then resume. After a controller restart, active runs return
           paused.
         </p>
         <p className="muted">

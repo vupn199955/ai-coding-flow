@@ -86,6 +86,21 @@ export class Store {
     }
   }
 
+  removeProject(id: string): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const plan of this.listPlans().filter((plan) => plan.projectId === id)) {
+        this.db.prepare('DELETE FROM events WHERE plan_id = ?').run(plan.id);
+        this.db.prepare('DELETE FROM plans WHERE id = ?').run(plan.id);
+      }
+      this.db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   getPlan(id: string): PlanRecord | null {
     const row = this.db.prepare('SELECT value FROM plans WHERE id = ?').get(id) as
       { value: string } | undefined;

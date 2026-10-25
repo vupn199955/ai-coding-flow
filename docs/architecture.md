@@ -4,7 +4,7 @@ AI Flow has two AI roles and a deterministic TypeScript controller. The controll
 
 ```mermaid
 flowchart TD
-  MD[Markdown task / dependency graph] --> Controller
+  MD[Direct text or Markdown tasks / dependency graph] --> Controller
   Controller --> Implementer[Codex implementer: workspace-write]
   Implementer --> Snapshot[Controller creates Git snapshot]
   Snapshot --> Verifier[Independent command verifier]
@@ -24,7 +24,7 @@ flowchart TD
 
 Shared contracts live in `packages/shared/src/index.ts`. A plan captures repository/task paths, the source base commit, the full task Markdown, agent settings, checks, budgets, execution history, task reviews, and final verification. SQLite stores complete plan snapshots and an append-only activity stream. Projects own a canonical repository path and editable defaults; every new plan has a project ID and captures those defaults. Generated Markdown, reviews, and check artifacts live in `<repository>/.ai-flow/runs/<run-id>` outside the role’s worktree. Worktrees live in `<repository>/.ai-flow/worktrees/<run-id>`. The controller directory holds the global SQLite registry. Legacy plans retain their captured workspace/report paths and are associated with projects during startup migration.
 
-A task has a stable ID, title, Markdown, dependencies, phase, current round, repair count, base/candidate/approved/integrated commits, latest check results, and all review rounds. One task is simply a one-node plan.
+A task has a stable ID, title, Markdown, dependencies, phase, current round, repair count, base/candidate/approved/integrated commits, latest check results, and all review rounds. One task is simply a one-node plan. `POST /api/plans` accepts `taskText` for a single direct-input task, mutually exclusive with `taskPath` and `taskIds`. A name is optional. File tasks accept arbitrary text/Markdown; frontmatter is optional, IDs default to safe filename-derived values, and the complete original text is preserved. Empty tasks are rejected.
 
 ## States
 
@@ -34,7 +34,7 @@ Task phases: `queued → implementing → checking → reviewing → approved`. 
 
 ## Commit and approval invariants
 
-1. Source repositories must be clean and have a commit at plan creation. The source base commit is captured immediately.
+1. Source repositories must have a commit at plan creation. No source working-tree cleanliness check is performed. The source base commit is captured immediately; pre-existing staged, unstaged, and untracked files stay in the source repository and are excluded from workflow commits.
 2. The controller creates an integration worktree and one task worktree at a time from the currently integrated result. Separate ref namespaces avoid Git’s branch-prefix collision rule.
 3. The controller stages and commits implementation output. Agents are instructed not to commit, push, merge, or deploy.
 4. Checks execute against the candidate commit. A tracked or untracked workspace change after checks invalidates that snapshot. Repositories should ignore normal build/test artifacts. Task worktrees live under a separate `tasks/` directory so task IDs cannot collide with the integration workspace.
@@ -65,33 +65,36 @@ Durability is checkpoint-based, not exactly-once execution. A crash can repeat a
 
 Each invocation stores its latest cumulative primary-thread usage report. Repeated notifications replace that invocation’s snapshot. Totals sum invocation totals, without separately adding cached input or reasoning output. Unknown usage stays unknown. Nested-agent usage is limited to what the runtime includes in reports; comprehensive provider billing reconciliation is outside this version.
 
-Review rounds, failed-check repair attempts, active elapsed time, and reported tokens bound execution. Limits are checked between stages and as timer/usage events arrive. In-flight requests may exceed a token threshold before usage arrives. Limits can be explicitly changed on inactive runs and the change is recorded as an event.
+Review rounds, failed-check repair attempts, and active elapsed time bound execution. Limits are checked between stages and on timer events. Token usage is informational and does not stop execution. Startup migration removes legacy token limits from defaults, project settings, and saved runs. Limits can be explicitly changed on inactive runs and the change is recorded as an event.
 
 ## API
 
-| Endpoint                                | Purpose                                                          |
-| --------------------------------------- | ---------------------------------------------------------------- |
-| `GET/POST /api/projects`                | List or register canonical project repository paths              |
-| `PUT /api/projects/:id`                 | Update project name/settings; repository path stays fixed        |
-| `GET /api/directories?path=…`           | Browse controller folders for project selection                  |
-| `DELETE /api/plans/:id`                 | Stop and remove a workflow; retain project artifacts and commits |
-| `GET /api/health`                       | Controller health                                                |
-| `GET /api/state`                        | Dashboard state and recent events                                |
-| `GET/PUT /api/config`                   | Default configuration                                            |
-| `POST /api/runtime/refresh?projectId=…` | Codex authentication/catalog status                              |
-| `GET /api/tasks?path=…`                 | Parse and preview Markdown tasks                                 |
-| `POST /api/plans`                       | Create a captured task/plan run                                  |
-| `GET /api/plans/:id`                    | Full persisted run                                               |
-| `POST /api/plans/:id/start`             | Start or resume                                                  |
-| `POST /api/plans/:id/pause`             | Interrupt and pause                                              |
-| `POST /api/plans/:id/cancel`            | Cancel, preserving artifacts                                     |
-| `PATCH /api/plans/:id/limits`           | Explicit budget adjustment                                       |
-| `GET /api/plans/:id/diff?taskId=…`      | Recorded candidate diff                                          |
-| `GET /api/plans/:id/reviews/:reviewId`  | Download Markdown review                                         |
-| `GET /api/events?planId=…&after=…`      | Persisted activity                                               |
-| `GET /api/stream`                       | Live event notifications via SSE                                 |
-| `POST /api/demo`                        | Create an isolated demo; optional `{ "start": true }`            |
+| Endpoint                                | Purpose                                                                   |
+| --------------------------------------- | ------------------------------------------------------------------------- |
+| `GET/POST /api/projects`                | List or register canonical project repository paths                       |
+| `DELETE /api/projects/:id`              | Stop project work and remove the project, all workflows, and their events |
+| `PUT /api/projects/:id`                 | Update project name/settings; repository path stays fixed                 |
+| `GET /api/directories?path=…`           | Browse controller folders for project selection                           |
+| `DELETE /api/plans/:id`                 | Stop and remove a workflow; retain project artifacts and commits          |
+| `GET /api/health`                       | Controller health                                                         |
+| `GET /api/state`                        | Dashboard state and recent events                                         |
+| `GET/PUT /api/config`                   | Default configuration                                                     |
+| `POST /api/runtime/refresh?projectId=…` | Codex authentication/catalog status                                       |
+| `GET /api/tasks?path=…`                 | Parse and preview Markdown tasks                                          |
+| `POST /api/plans`                       | Create a captured task/plan run                                           |
+| `GET /api/plans/:id`                    | Full persisted run                                                        |
+| `POST /api/plans/:id/start`             | Start or resume                                                           |
+| `POST /api/plans/:id/pause`             | Interrupt and pause                                                       |
+| `POST /api/plans/:id/cancel`            | Cancel, preserving artifacts                                              |
+| `PATCH /api/plans/:id/limits`           | Explicit budget adjustment                                                |
+| `GET /api/plans/:id/diff?taskId=…`      | Recorded candidate diff                                                   |
+| `GET /api/plans/:id/reviews/:reviewId`  | Download Markdown review                                                  |
+| `GET /api/events?planId=…&after=…`      | Persisted activity                                                        |
+| `GET /api/stream`                       | Live event notifications via SSE                                          |
+| `POST /api/demo`                        | Create an isolated demo; optional `{ "start": true }`                     |
 
 ## Boundaries
 
 This version is local and single-user, with sequential plan execution. It does not provide remote multi-tenant authentication, parallel scheduling, automated source-branch merging, production deployment, model billing reconciliation, or exactly-once external side effects. Worktrees and artifacts are deliberately retained for inspection; automatic pruning is not enabled. Workflow removal first aborts and awaits active execution, then transactionally removes the plan and its events. It preserves project files and Git history.
+
+Project deletion marks the project as being removed, preventing new workflows or starts while active execution is aborted and awaited. The registry then deletes all associated workflows, their events, and the project in one transaction. Runtime status is discarded. Project files and Git history are retained.

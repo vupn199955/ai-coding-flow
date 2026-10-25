@@ -95,35 +95,101 @@ describe('implementation / review controller', () => {
     expect(controller.requirePlan(plan.id).config.agents.implementer.effort).toBe('deterministic');
   });
 
-  it('enforces a reported token budget without accumulating repeated cumulative usage snapshots', async () => {
+  it('reports cumulative usage without imposing a token limit, including across resume', async () => {
+    const demo = new DemoRuntime();
     const runtime: AgentRuntime = {
-      inspect: () => new DemoRuntime().inspect(),
+      inspect: () => demo.inspect(),
       run: async (request) => {
         const usage = {
-          inputTokens: 900,
-          cachedInputTokens: 800,
-          outputTokens: 200,
-          reasoningOutputTokens: 50,
-          totalTokens: 1100,
+          inputTokens: 900_000_000,
+          cachedInputTokens: 800_000_000,
+          outputTokens: 200_000_000,
+          reasoningOutputTokens: 50_000_000,
+          totalTokens: 1_100_000_000,
           source: 'reported' as const,
         };
         request.onUsage(usage);
         request.onUsage(usage);
-        if (request.signal.aborted) throw new InterruptedError();
-        return { text: 'Done', usage };
+        return { ...(await demo.run(request)), usage };
       },
     };
     controller = new FlowController(store, process.cwd(), { runtimeFactory: () => runtime });
     const plan = await controller.createDemo();
-    controller.updateLimits(plan.id, { ...plan.config.limits, maxTokens: 1000 });
+    controller.updateLimits(plan.id, {
+      ...plan.config.limits,
+      maxReviewRounds: 1,
+      maxTokens: 1000,
+    });
     controller.start(plan.id);
     await controller.waitForIdle();
     const stopped = controller.requirePlan(plan.id);
-    expect(stopped.status).toBe('needs_attention');
-    expect(stopped.error).toMatch(/token budget/i);
-    expect(stopped.attempts).toHaveLength(1);
-    expect(stopped.attempts[0]?.usage?.totalTokens).toBe(1100);
-    expect(() => controller.start(plan.id)).toThrow(/token budget/);
+    expect(stopped.error).toMatch(/review-round limit/);
+    expect(stopped.attempts[0]?.usage?.totalTokens).toBe(1_100_000_000);
+    controller.updateLimits(plan.id, { ...plan.config.limits, maxReviewRounds: 5 });
+    controller.start(plan.id);
+    await controller.waitForIdle();
+    const result = controller.requirePlan(plan.id);
+    expect(result.status, result.error).toBe('completed');
+    expect(result.attempts.every((attempt) => attempt.usage?.totalTokens === 1_100_000_000)).toBe(
+      true,
+    );
+  });
+
+  it('runs direct instructions without task files and commits only workflow edits when the source has local changes', async () => {
+    const instructions = 'Add a value utility and a unit test. Follow this plain text exactly.';
+    const runtime: AgentRuntime = {
+      inspect: () => new DemoRuntime().inspect(),
+      run: async (request) => {
+        expect(request.prompt).toContain(instructions);
+        if (request.role === 'reviewer')
+          return {
+            text: 'Approved',
+            review: { verdict: 'approved', summary: 'Value is tested.', findings: [] },
+          };
+        await writeFile(path.join(request.cwd, 'value.js'), 'export const value = 42;\n');
+        await writeFile(
+          path.join(request.cwd, 'value.test.js'),
+          "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { value } from './value.js';\ntest('value', () => assert.equal(value, 42));\n",
+        );
+        return { text: 'Implemented.\nCommit title: feat: add value utility' };
+      },
+    };
+    controller = new FlowController(store, process.cwd(), { runtimeFactory: () => runtime });
+    const fixture = await controller.createDemo();
+    const repository = fixture.config.repositoryPath;
+    const sourceHead = await git(repository, ['rev-parse', 'HEAD']);
+    await writeFile(path.join(repository, 'README.md'), 'User edits, keep these.\n');
+    await git(repository, ['add', 'README.md']);
+    await writeFile(path.join(repository, 'README.md'), 'More user edits, keep these too.\n');
+    await writeFile(path.join(repository, 'user-notes.txt'), 'Untracked user work.\n');
+    const staged = await git(repository, ['diff', '--cached']);
+    const project = controller.requireProject(fixture.projectId!);
+    controller.updateProject(project.id, { config: { ...project.config, taskPath: '' } });
+    const plan = await controller.createPlan({
+      name: '',
+      projectId: project.id,
+      taskText: instructions,
+    });
+    expect(plan.name).toBe(instructions);
+    expect(plan.tasks).toHaveLength(1);
+    expect(plan.tasks[0]?.markdown).toBe(instructions);
+    expect(plan.tasks[0]?.sourcePath).toBe('');
+    controller.start(plan.id);
+    await controller.waitForIdle();
+    const result = controller.requirePlan(plan.id);
+    expect(result.status, result.error).toBe('completed');
+    expect(await git(repository, ['rev-parse', 'HEAD'])).toBe(sourceHead);
+    expect(await git(repository, ['diff', '--cached'])).toBe(staged);
+    expect(await readFile(path.join(repository, 'README.md'), 'utf8')).toContain('More user edits');
+    expect(await readFile(path.join(repository, 'user-notes.txt'), 'utf8')).toContain(
+      'Untracked user work',
+    );
+    expect(
+      await git(result.workspacePath!, ['diff', '--name-only', sourceHead, result.finalCommit!]),
+    ).toBe('value.js\nvalue.test.js');
+    expect(await readFile(path.join(plan.artifactsPath!, 'tasks/task/task.md'), 'utf8')).toBe(
+      instructions,
+    );
   });
 
   it('repairs failed independent checks before requesting a review', async () => {

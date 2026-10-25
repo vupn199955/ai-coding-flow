@@ -32,7 +32,7 @@ async function main() {
         timeoutSeconds: 30,
       },
     ],
-    limits: { maxReviewRounds: 3, maxFixAttempts: 3, maxRunMinutes: 10, maxTokens: 400_000 },
+    limits: { maxReviewRounds: 3, maxFixAttempts: 3, maxRunMinutes: 10 },
   };
   smoke.agents.implementer = { ...smoke.agents.implementer, model: 'gpt-6.1-sol', effort: 'low' };
   smoke.agents.reviewer = { ...smoke.agents.reviewer, model: 'gpt-6.1-sol', effort: 'low' };

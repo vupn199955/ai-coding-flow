@@ -35,7 +35,7 @@ describe('local controller API', () => {
     const malformed = await fetch(origin + '/api/plans', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: '' }),
+      body: JSON.stringify({ taskText: '   ' }),
     });
     expect(malformed.status).toBe(400);
   });
@@ -117,6 +117,54 @@ describe('local controller API', () => {
     expect((await fetch(origin + `/api/plans/${plan.id}/start`, { method: 'POST' })).status).toBe(
       400,
     );
+  });
+
+  it('accepts direct text without a name or task file and deletes every workflow in a project over HTTP', async () => {
+    const fixture = await application.flow.createDemo();
+    const post = (value: unknown) =>
+      fetch(origin + '/api/plans', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(value),
+      });
+    const instructions = 'Fix a small bug and add a regression test.';
+    const response = await post({ projectId: fixture.projectId, taskText: instructions });
+    expect(response.status).toBe(201);
+    const plan = await response.json();
+    expect(plan.name).toBe(instructions);
+    expect(plan.tasks[0].markdown).toBe(instructions);
+    expect((await post({ projectId: fixture.projectId, taskText: ' ' })).status).toBe(400);
+    expect(
+      (
+        await post({
+          projectId: fixture.projectId,
+          taskText: instructions,
+          taskPath: fixture.config.taskPath,
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (await post({ projectId: fixture.projectId, taskText: instructions, taskIds: ['greeting'] }))
+        .status,
+    ).toBe(400);
+    application.flow.start(fixture.id);
+    const deleted = await fetch(origin + `/api/projects/${fixture.projectId}`, {
+      method: 'DELETE',
+    });
+    expect(deleted.status).toBe(200);
+    expect(await deleted.json()).toEqual({ removed: fixture.projectId });
+    const state = await (await fetch(origin + '/api/state')).json();
+    expect(state.projects.some((project: { id: string }) => project.id === fixture.projectId)).toBe(
+      false,
+    );
+    expect(
+      state.plans.some((run: { projectId: string }) => run.projectId === fixture.projectId),
+    ).toBe(false);
+    expect(application.store.getEvents(fixture.id)).toEqual([]);
+    expect(application.store.getEvents(plan.id)).toEqual([]);
+    expect(
+      (await fetch(origin + `/api/projects/${fixture.projectId}`, { method: 'DELETE' })).status,
+    ).toBe(400);
   });
 
   it('closes live event streams when the controller shuts down', async () => {

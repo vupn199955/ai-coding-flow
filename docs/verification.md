@@ -4,13 +4,21 @@ Verified locally on **2026-10-25** with Node.js 22.13.0.
 
 ## Automated checks
 
-- **42 tests passed** across eight files.
+- **48 tests passed** across eight files.
 - TypeScript checks passed for the server, dashboard, and shared contracts.
 - The production build passed.
 - Formatting checks passed.
 - Dependency audit: zero reported vulnerabilities.
 
-Tests exercise the Codex JSON-RPC handshake with a fake executable, model/effort validation, review schema invariants, Markdown dependency graphs, configuration capture, SQLite recovery, actual process exits/timeouts/cancellation, clean-commit checks, blocking review repairs, failed-check repairs, final-plan repairs, pause/resume after integration, token limits, API validation/origin restrictions, and live-stream shutdown.
+Tests exercise the Codex JSON-RPC handshake with a fake executable, model/effort validation, review schema invariants, Markdown dependency graphs, configuration capture, SQLite recovery, actual process exits/timeouts/cancellation, clean-commit checks, blocking review repairs, failed-check repairs, final-plan repairs, pause/resume after integration, unlimited token reporting, direct text tasks, project deletion, dirty source preservation, API validation/origin restrictions, and live-stream shutdown.
+
+## Flexible workflow update
+
+- Verified direct text execution without a task path, verbatim instruction capture, and optional run names through controller/API tests.
+- Verified that staged, unstaged, and untracked source edits remain intact while the output commit contains only workflow edits.
+- Verified project deletion stops active execution, removes queued/cancelled workflows and their events, preserves other projects, and remains deleted after restart.
+- Verified large cumulative token reports do not stop execution or prevent resume, and legacy token limits are removed from saved settings and runs.
+- Checked the dashboard: text input alone enables creation, Markdown input/preview remains available, project deletion explains file retention, and settings show only retry/runtime limits. These UI checks did not start model calls or delete existing projects.
 
 ## Project workflow update
 
@@ -28,7 +36,7 @@ These update checks used temporary repositories and a separate controller databa
 
 The installed runtime advertised GPT-6.1 Sol with Low, Medium, High, Extra High, Max, and Ultra efforts. A real single-task run used **GPT-6.1 Sol at Low effort** in an isolated fixture repository. It generated a greeting utility and four passing unit tests, received task approval, passed combined verification, and received final plan approval.
 
-The first review invocation reached the initial 100,000-token run budget. The controller interrupted it, preserved its reported usage, and entered `needs_attention`. After an explicit increase to 400,000 tokens, the run resumed and completed.
+Historical verification before token limits were removed: the first review invocation reached the initial 100,000-token run budget. The controller interrupted it, preserved its reported usage, and entered `needs_attention`. After an explicit increase to 400,000 tokens, the run resumed and completed.
 
 | Invocation                  | Status                      | Reported tokens |
 | --------------------------- | --------------------------- | --------------: |

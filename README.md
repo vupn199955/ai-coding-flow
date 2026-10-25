@@ -29,15 +29,19 @@ The dashboard listens on port `3000`; the local controller listens on `4310`. Bo
 1. Install [Codex CLI](https://learn.chatgpt.com/docs/cli) and run `codex login`. If the executable is not on PATH, set `CODEX_BIN` to its absolute path.
 2. Click **Add project** in the Projects sidebar and use **Browse folder** to select your Git repository. The selected folder is the project’s repository path. Each project has its own workflows and settings.
 3. Open **Agents**. The model catalog loads automatically; use **Refresh Codex catalog** to retry. Select the model and reasoning effort for each role, then save. GPT-6.1 Sol and Ultra are selectable when advertised by your runtime. Unsupported combinations fail explicitly; they are never silently replaced. A catalog entry is not an entitlement guarantee—actual model access is confirmed by a successful invocation.
-4. Open the project’s **Settings** and enter its task path. The **Task file or directory** remains a text input. The repository must have a clean working tree and at least one commit. The task path can be one `.md` file or a directory of `.md` files.
-5. Set the repository’s actual checks. At least one must be a unit-test check. Configure active runtime, reported token, check-repair, and review-round limits.
-6. Click **New workflow**. Preview or select tasks if desired; required dependencies are included automatically. Start the run and follow Activity, Reviews, Checks, Changes, and Usage.
+4. Open the project’s **Settings**. The repository needs at least one commit; local staged, unstaged, and untracked changes can stay in place. Optionally set a default task path for workflows created from one `.md` file or a directory of `.md` files.
+5. Set the repository’s actual checks. At least one must be a unit-test check. Configure active runtime, check-repair, and review-round limits. Workflows have no token limit.
+6. Click **New workflow** and type task instructions directly. A run name is optional. For file-based work, switch **Task source** to **Markdown file or directory** and optionally preview/select tasks; required dependencies are included automatically. Start the run and follow Activity, Reviews, Checks, Changes, and Usage.
 
 Project settings apply to new workflows; existing workflows retain their captured settings. **Global defaults** in the sidebar supplies starting model, instruction, check, and limit settings for new projects. Task paths remain independent inputs and can point outside the repository.
 
-You can keep working in the source repository: execution takes place in managed Git worktrees. AI Flow does not switch your source branch, automatically merge into it, push code, or deploy the result.
+You can keep working in the source repository: execution takes place in managed Git worktrees based on the captured HEAD commit. Existing local edits stay in the source repository and are excluded from workflow commits. AI Flow does not switch your source branch, automatically merge into it, push code, or deploy the result.
 
-### Markdown task format
+### Task instructions
+
+Tasks can be plain text or Markdown in any format. No headings, frontmatter, or template are required. Direct UI input becomes one task and is saved verbatim with the workflow. For files, IDs default to a safe filename-derived value and titles come from a heading or the first text line. The agents receive the entire original text.
+
+Optional frontmatter can provide an explicit `id`, `title`, or `depends_on` list for multi-task plans. For example:
 
 ```markdown
 ---
@@ -67,7 +71,7 @@ depends_on: []
 - Repository failure.
 ```
 
-For a dependent task, use `depends_on: [create-users]`. IDs must be unique and contain only letters, digits, underscores, and hyphens. Missing dependencies and cycles are rejected before execution. Tasks run sequentially in dependency order; parallel scheduling is not part of this first version.
+For a dependent task, optionally use `depends_on: [create-users]`. Explicit IDs start with a letter or digit and contain only letters, digits, underscores, and hyphens (up to 100 characters). Unusable metadata is treated as task text; IDs fall back to safe filename-derived values. IDs must be unique, ignoring case. Missing dependencies and cycles are rejected before execution. Tasks run sequentially in dependency order; parallel scheduling is not part of this first version.
 
 Examples are in [`examples/tasks`](examples/tasks). Test command recipes for JavaScript, TypeScript, React, NestJS, Next.js, CDK, Docker, GitHub Actions, and GitLab CI are in [`docs/check-recipes.md`](docs/check-recipes.md).
 
@@ -89,6 +93,8 @@ Passing commands alone do not establish test quality. The reviewer is instructed
 Pause interrupts the active agent/check process and preserves work. Resume continues from stored workspaces and checkpoints; an unfinished invocation starts a new session with task requirements and available feedback. Restarting the controller turns previously active runs into paused runs. It does not silently restart model calls.
 
 When a limit or error stops progress, the run becomes **Needs attention**. Inspect the logs and checks, fix environmental issues if necessary, or use the run’s **Adjust limits** control before resuming. A cancelled run retains artifacts but cannot be resumed. Different projects can run concurrently. Each project allows one active workflow, with independent pause, resume, cancellation, and budgets. Tasks within each workflow still execute sequentially.
+
+Use the trash button beside a project in the sidebar to **Delete project & workflows**. This stops active work and deletes the project, all its workflows, and their activity from the dashboard. Repository files, generated documents, worktrees, branches, and commits stay on disk. Deleted projects and workflows are not restored on controller restart.
 
 Use **Remove workflow** on a workflow card or its detail header to remove it and its activity from the dashboard. Active work is stopped before removal. Project documents, worktrees, branches, and commits are retained on disk.
 
@@ -121,7 +127,7 @@ The plan’s final branch is `ai-flow/<run-id>`. Task branches use `ai-flow-task
 
 The Usage tab records runtime-reported input, cached input, output, reasoning output, and total tokens per invocation. Cumulative notifications replace the current invocation snapshot instead of being added repeatedly. Cached input is not added a second time to input; reasoning output is not added a second time to output.
 
-Unknown usage is displayed as unknown. Demo agents make no model calls and do not fabricate token usage. Reported token budgets are checked as events arrive and can overshoot during an in-flight request. Nested-agent usage depends on what Codex reports for the primary thread; the app does not invent missing usage. This is an activity ledger, not a billing invoice. API charges and ChatGPT plan credits differ.
+Unknown usage is displayed as unknown. Demo agents make no model calls and do not fabricate token usage. Token usage is informational and never stops a workflow; legacy token budgets are removed automatically when the controller starts. Nested-agent usage depends on what Codex reports for the primary thread; the app does not invent missing usage. This is an activity ledger, not a billing invoice. API charges and ChatGPT plan credits differ.
 
 ## Configuration and environment
 

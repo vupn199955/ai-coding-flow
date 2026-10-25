@@ -151,6 +151,19 @@ button {
   padding: 10px;
   border-radius: 8px;
 }
+.project-row {
+  display: flex;
+  align-items: center;
+  margin-top: 4px;
+  min-width: 0;
+}
+.project-row .project-item {
+  flex: 1;
+  min-width: 0;
+}
+.project-delete {
+  flex-shrink: 0;
+}
 .project-item.selected,
 .project-item:hover {
   color: #fff;
@@ -2136,7 +2149,7 @@ h1 {
 }
 .limits-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 16px;
 }
 .limits-grid .form-field {

@@ -1,26 +1,60 @@
 import { readdir, readFile, stat, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import matter from 'gray-matter';
 import type { TaskDefinition } from '@ai-flow/shared';
 import { z } from 'zod';
 
-const metadataSchema = z
-  .object({
-    id: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$/),
-    title: z.string().trim().min(1).optional(),
-    depends_on: z.array(z.string()).default([]),
-  })
-  .passthrough();
+const taskIdSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$/);
+
+function fileTaskId(sourcePath: string): string {
+  const stem = path.basename(sourcePath, path.extname(sourcePath));
+  if (taskIdSchema.safeParse(stem).success) return stem;
+  const slug = stem
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/^[^a-zA-Z0-9]+/, '')
+    .slice(0, 80);
+  return `${slug || 'task'}-${createHash('sha256').update(stem).digest('hex').slice(0, 8)}`;
+}
 
 export function parseTask(markdown: string, sourcePath: string): TaskDefinition {
   if (Buffer.byteLength(markdown) > 512_000) throw new Error(`Task is too large: ${sourcePath}`);
-  const { data, content } = matter(markdown);
-  const metadata = metadataSchema.parse(data);
+  if (!markdown.trim()) throw new Error(`Task is empty: ${sourcePath || 'direct input'}`);
+  let data: Record<string, unknown> = {};
+  let content = markdown;
+  try {
+    // Only parse ordinary YAML frontmatter. Language-tagged fences are task text;
+    // gray-matter's JavaScript engine would otherwise evaluate instructions.
+    if (/^---\r?\n/.test(markdown)) {
+      const parsed = matter(markdown);
+      if (parsed.data && typeof parsed.data === 'object' && !Array.isArray(parsed.data))
+        data = parsed.data;
+      content = parsed.content;
+    }
+  } catch {
+    // Arbitrary text (including YAML-looking text) is still a valid task.
+  }
+  const id = taskIdSchema.safeParse(data.id);
+  const metadataTitle = z.string().trim().min(1).safeParse(data.title);
+  const dependencies = z.array(taskIdSchema).safeParse(data.depends_on);
   const heading = content.match(/^#\s+(.+)$/m)?.[1];
-  const title = metadata.title || heading?.trim();
-  if (!title || !content.trim())
-    throw new Error(`Task ${metadata.id} needs a title and description.`);
-  return { id: metadata.id, title, markdown, dependsOn: metadata.depends_on, sourcePath };
+  const firstLine = (content.trim() || markdown.trim()).split(/\r?\n/)[0]!;
+  const title = metadataTitle.success
+    ? metadataTitle.data.slice(0, 200)
+    : (heading?.trim() || firstLine).slice(0, 200);
+  return {
+    id: id.success ? id.data : fileTaskId(sourcePath || 'task.md'),
+    title,
+    markdown,
+    dependsOn: dependencies.success ? dependencies.data : [],
+    sourcePath,
+  };
+}
+
+export function textTask(text: string): TaskDefinition {
+  // Direct input is one task; metadata-looking instructions remain literal text.
+  const task = parseTask(text, '');
+  return { ...task, id: 'task', dependsOn: [] };
 }
 
 export function sortTasks(tasks: TaskDefinition[]): TaskDefinition[] {
@@ -57,6 +91,8 @@ export async function loadTasks(
   inputPath: string,
   selectedIds?: string[],
 ): Promise<TaskDefinition[]> {
+  if (!inputPath.trim())
+    throw new Error('Enter a task file or directory, or use direct task text.');
   const source = await realpath(inputPath);
   const info = await stat(source);
   const files = info.isDirectory()

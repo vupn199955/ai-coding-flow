@@ -17,11 +17,13 @@ describe('independent checks and commit integrity', () => {
     await rm(directory, { recursive: true, force: true });
   });
 
-  it('rejects dirty source repositories and changed snapshots', async () => {
+  it('accepts source repositories with local changes while rejecting changed candidate snapshots', async () => {
     expect(await validateRepository(repository)).toBe(await realpath(repository));
     const commit = await git(repository, ['rev-parse', 'HEAD']);
     await writeFile(path.join(repository, 'new.js'), 'export const value = 1;\n');
-    await expect(validateRepository(repository)).rejects.toThrow(/uncommitted/);
+    await expect(validateRepository(repository)).resolves.toBe(await realpath(repository));
+    await git(repository, ['add', 'new.js']);
+    await expect(validateRepository(repository)).resolves.toBe(await realpath(repository));
     await expect(assertCleanCommit(repository, commit)).rejects.toThrow(/changed/);
     const next = await checkpoint(repository, 'Add new value');
     expect(next).not.toBe(commit);

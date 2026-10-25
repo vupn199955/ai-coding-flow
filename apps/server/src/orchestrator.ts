@@ -16,7 +16,7 @@ import type {
 } from '@ai-flow/shared';
 import { defaultConfig, parseConfig } from './config';
 import { Store } from './store';
-import { loadTasks } from './tasks';
+import { loadTasks, textTask } from './tasks';
 import { CodexRuntime, DemoRuntime, createDemoProject, type AgentRuntime } from './runtime';
 import { InterruptedError, git } from './process';
 import {
@@ -43,6 +43,7 @@ interface ActiveRun {
 export class FlowController {
   private readonly active = new Map<string, ActiveRun>();
   private readonly removing = new Set<string>();
+  private readonly removingProjects = new Set<string>();
   private readonly runtimeStatuses = new Map<string, RuntimeStatus>();
   private readonly runtimeRefreshes = new Map<string, Promise<RuntimeStatus>>();
   private runtimeStatus: RuntimeStatus | null = null;
@@ -59,7 +60,8 @@ export class FlowController {
         config.runtime === 'demo'
           ? new DemoRuntime()
           : new CodexRuntime(process.env.CODEX_BIN || 'codex', config.repositoryPath));
-    if (!store.getConfig()) store.saveConfig(defaultConfig(root));
+    // Parsing also drops legacy token limits from saved configurations.
+    store.saveConfig(parseConfig(store.getConfig() || defaultConfig(root)));
     this.migrateProjects();
     store.recoverInterruptedRuns();
   }
@@ -96,10 +98,16 @@ export class FlowController {
   }
 
   private migrateProjects(): void {
+    for (const project of this.store.listProjects()) {
+      project.config = parseConfig(project.config);
+      this.store.saveProject(project);
+    }
     const byPath = new Map(
       this.store.listProjects().map((project) => [project.repositoryPath, project]),
     );
     for (const plan of this.store.listPlans()) {
+      plan.config = parseConfig(plan.config);
+      this.store.savePlan(plan);
       if (plan.projectId && this.store.getProject(plan.projectId)) continue;
       const repository = canonicalPath(plan.config.repositoryPath);
       let project = byPath.get(repository);
@@ -115,9 +123,32 @@ export class FlowController {
   }
 
   requireProject(id: string): ProjectRecord {
+    if (this.removingProjects.has(id)) throw new Error('This project is being removed.');
     const project = this.store.getProject(id);
     if (!project) throw new Error('Project not found.');
     return project;
+  }
+
+  async removeProject(id: string): Promise<{ removed: string }> {
+    const project = this.requireProject(id);
+    this.removingProjects.add(id);
+    try {
+      const runs = [...this.active.values()].filter((run) => run.plan.projectId === id);
+      for (const run of runs) this.stop(run.plan.id, 'cancel');
+      await Promise.all(runs.map((run) => run.done));
+      this.store.removeProject(id);
+      this.runtimeStatuses.delete(id);
+      this.event(
+        null,
+        null,
+        'controller',
+        'state',
+        `Project removed: ${project.name}, including all workflows and activity. Repository files and commits retained.`,
+      );
+      return { removed: id };
+    } finally {
+      this.removingProjects.delete(id);
+    }
   }
 
   async createProject(input: { repositoryPath: string; name?: string }): Promise<ProjectRecord> {
@@ -125,7 +156,7 @@ export class FlowController {
     const existing = this.store
       .listProjects()
       .find((project) => project.repositoryPath === repository);
-    if (existing) return existing;
+    if (existing) return this.requireProject(existing.id);
     await excludeRuntimeFiles(repository);
     const project = projectRecord(
       repository,
@@ -134,7 +165,7 @@ export class FlowController {
     );
     // Recheck after asynchronous validation to handle two simultaneous requests.
     const duplicate = this.store.listProjects().find((item) => item.repositoryPath === repository);
-    if (duplicate) return duplicate;
+    if (duplicate) return this.requireProject(duplicate.id);
     this.store.saveProject(project);
     this.event(
       null,
@@ -176,6 +207,11 @@ export class FlowController {
     const refresh = new CodexRuntime(process.env.CODEX_BIN || 'codex', cwd)
       .inspect()
       .then((status) => {
+        if (
+          projectId &&
+          (!this.store.getProject(projectId) || this.removingProjects.has(projectId))
+        )
+          return status;
         this.runtimeStatuses.set(key, status);
         this.runtimeStatus = status;
         return status;
@@ -190,6 +226,11 @@ export class FlowController {
   }
 
   async createPlan(input: CreatePlanInput, override?: FlowConfig): Promise<PlanRecord> {
+    if (
+      input.taskText !== undefined &&
+      (input.taskPath !== undefined || input.taskIds !== undefined)
+    )
+      throw new Error('Choose task text or Markdown files, not both.');
     let project = input.projectId ? this.requireProject(input.projectId) : undefined;
     if (
       project &&
@@ -214,11 +255,14 @@ export class FlowController {
         this.store.saveProject(project);
       }
     }
-    const definitions = await loadTasks(config.taskPath, input.taskIds);
+    const definitions =
+      input.taskText !== undefined
+        ? [textTask(input.taskText)]
+        : await loadTasks(config.taskPath, input.taskIds);
     const timestamp = new Date().toISOString();
     const plan: PlanRecord = {
       id: randomUUID(),
-      name: input.name.trim() || definitions[0]!.title,
+      name: input.name?.trim() || definitions[0]!.title,
       projectId: project.id,
       storageDirectory: path.join(config.repositoryPath, '.ai-flow'),
       status: 'queued',
@@ -238,6 +282,8 @@ export class FlowController {
       baseCommit: await git(config.repositoryPath, ['rev-parse', 'HEAD']),
       integrationChecks: [],
     };
+    // Deletion may have started while repository/task validation was awaiting I/O.
+    this.requireProject(project.id);
     plan.artifactsPath = path.join(plan.storageDirectory!, 'runs', plan.id);
     this.store.savePlan(plan);
     this.event(
@@ -274,6 +320,7 @@ export class FlowController {
   start(id: string): PlanRecord {
     if (this.removing.has(id)) throw new Error('This workflow is being removed.');
     const plan = this.requirePlan(id);
+    if (plan.projectId) this.requireProject(plan.projectId);
     if (
       [...this.active.values()].some(
         (run) =>
@@ -288,8 +335,6 @@ export class FlowController {
       throw new Error(`Cannot start a ${plan.status} run.`);
     if (plan.elapsedMs >= plan.config.limits.maxRunMinutes * 60_000)
       throw new Error('The time budget is exhausted. Increase this run’s limits before resuming.');
-    if (this.totalTokens(plan) >= plan.config.limits.maxTokens)
-      throw new Error('The token budget is exhausted. Increase this run’s limits before resuming.');
     plan.status = 'running';
     plan.error = undefined;
     plan.startedAt ||= new Date().toISOString();
@@ -415,22 +460,12 @@ export class FlowController {
     this.store.addEvent({ planId, taskId, role, type, message: message.slice(0, 16_000) });
   }
 
-  private totalTokens(plan: PlanRecord): number {
-    return plan.attempts.reduce(
-      (sum, attempt) =>
-        sum + (attempt.usage?.source === 'reported' ? attempt.usage.totalTokens : 0),
-      0,
-    );
-  }
-
   private enforceBudgets(run: ActiveRun): void {
     if (run.stop) return;
     const reason =
       run.plan.elapsedMs >= run.plan.config.limits.maxRunMinutes * 60_000
         ? 'Time budget reached.'
-        : this.totalTokens(run.plan) >= run.plan.config.limits.maxTokens
-          ? 'Reported token budget reached.'
-          : null;
+        : null;
     if (reason) {
       run.stop = 'budget';
       run.stopMessage = reason;

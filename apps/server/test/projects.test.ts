@@ -49,14 +49,14 @@ describe('project workflows', () => {
       config: {
         ...project.config,
         taskPath: source.taskPath,
-        limits: { ...project.config.limits, maxTokens: 4321 },
+        limits: { ...project.config.limits, maxRunMinutes: 432 },
       },
     });
-    expect(flow.config().limits.maxTokens).not.toBe(4321);
+    expect(flow.config().limits.maxRunMinutes).not.toBe(432);
     const plan = await flow.createPlan({ name: 'Project run', projectId: project.id });
-    expect(plan.config.limits.maxTokens).toBe(4321);
+    expect(plan.config.limits.maxRunMinutes).toBe(432);
     flow.updateProject(project.id, { config: project.config });
-    expect(flow.requirePlan(plan.id).config.limits.maxTokens).toBe(4321);
+    expect(flow.requirePlan(plan.id).config.limits.maxRunMinutes).toBe(432);
     await expect(
       flow.createPlan({
         name: 'Wrong repository',
@@ -181,6 +181,49 @@ describe('project workflows', () => {
     expect(flow.requirePlan('legacy-one').workspacePath).toBe('/legacy/workspace');
     expect(flow.requirePlan('legacy-one').config).toEqual(source.config);
     expect(flow.requirePlan('legacy-one').storageDirectory).toBeUndefined();
+  });
+
+  it('deletes a project and all workflows after stopping active work, without restoring them on restart', async () => {
+    const active = await flow.createDemo();
+    const queued = await flow.createPlan({ name: 'Queued', projectId: active.projectId });
+    const cancelled = await flow.createPlan({ name: 'Cancelled', projectId: active.projectId });
+    flow.stop(cancelled.id, 'cancel');
+    const other = await flow.createDemo();
+    flow.start(active.id);
+    const deleting = flow.removeProject(active.projectId!);
+    expect(() => flow.start(queued.id)).toThrow(/being removed/);
+    await expect(
+      flow.createPlan({ name: 'Late run', projectId: active.projectId }),
+    ).rejects.toThrow(/being removed/);
+    await deleting;
+    expect(flow.state().activePlanIds).toEqual([]);
+    expect(store.getProject(active.projectId!)).toBeNull();
+    for (const plan of [active, queued, cancelled]) {
+      expect(store.getPlan(plan.id)).toBeNull();
+      expect(store.getEvents(plan.id)).toEqual([]);
+    }
+    expect(store.getPlan(other.id)).not.toBeNull();
+    await access(path.join(active.config.repositoryPath, '.git'));
+    await access(path.join(active.artifactsPath!, 'progress.md'));
+    store.close();
+    store = new Store(path.join(directory, 'controller'));
+    flow = new FlowController(store, process.cwd());
+    expect(flow.state().projects.map((item) => item.id)).toEqual([other.projectId]);
+    expect(flow.state().plans.map((item) => item.id)).toEqual([other.id]);
+    await expect(flow.removeProject('missing')).rejects.toThrow(/not found/);
+  });
+
+  it('removes legacy token limits from global settings, projects, and saved workflows', async () => {
+    const plan = await flow.createDemo();
+    const project = store.getProject(plan.projectId!)!;
+    const withLegacyLimit = { ...plan.config, limits: { ...plan.config.limits, maxTokens: 1000 } };
+    store.saveConfig(withLegacyLimit);
+    store.saveProject({ ...project, config: withLegacyLimit });
+    store.savePlan({ ...plan, config: withLegacyLimit });
+    flow = new FlowController(store, process.cwd());
+    expect(flow.config().limits).not.toHaveProperty('maxTokens');
+    expect(flow.requireProject(project.id).config.limits).not.toHaveProperty('maxTokens');
+    expect(flow.requirePlan(plan.id).config.limits).not.toHaveProperty('maxTokens');
   });
 
   it('browses absolute directories with spaces and rejects non-directory paths', async () => {

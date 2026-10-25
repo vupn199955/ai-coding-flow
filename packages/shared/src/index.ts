@@ -30,7 +30,6 @@ export interface FlowConfig {
     maxReviewRounds: number;
     maxFixAttempts: number;
     maxRunMinutes: number;
-    maxTokens: number;
   };
   networkAccess: boolean;
 }
@@ -203,9 +202,10 @@ export interface DashboardState {
 }
 
 export interface CreatePlanInput {
-  name: string;
+  name?: string;
   projectId?: string;
   repositoryPath?: string;
   taskPath?: string;
+  taskText?: string;
   taskIds?: string[];
 }

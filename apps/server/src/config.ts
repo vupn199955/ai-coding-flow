@@ -11,7 +11,7 @@ const agentSchema = z.object({
 export const configSchema = z
   .object({
     repositoryPath: z.string().trim().min(1),
-    taskPath: z.string().trim().min(1),
+    taskPath: z.string().trim().default(''),
     runtime: z.enum(['codex', 'demo']),
     agents: z.object({ implementer: agentSchema, reviewer: agentSchema }),
     checks: z
@@ -38,7 +38,6 @@ export const configSchema = z
       maxReviewRounds: z.number().int().min(1).max(50),
       maxFixAttempts: z.number().int().min(1).max(50),
       maxRunMinutes: z.number().int().min(1).max(1440),
-      maxTokens: z.number().int().min(1000).max(100_000_000),
     }),
     networkAccess: z.boolean(),
   })
@@ -79,14 +78,17 @@ export function defaultConfig(root: string): FlowConfig {
         timeoutSeconds: 180,
       },
     ],
-    limits: { maxReviewRounds: 5, maxFixAttempts: 5, maxRunMinutes: 120, maxTokens: 500_000 },
+    limits: { maxReviewRounds: 5, maxFixAttempts: 5, maxRunMinutes: 120 },
     networkAccess: true,
   };
 }
 
 export function parseConfig(input: unknown): FlowConfig {
   const value = configSchema.parse(input);
-  if (!path.isAbsolute(value.repositoryPath) || !path.isAbsolute(value.taskPath)) {
+  if (
+    !path.isAbsolute(value.repositoryPath) ||
+    (value.taskPath && !path.isAbsolute(value.taskPath))
+  ) {
     throw new Error('Repository and task paths must be absolute paths.');
   }
   return value;

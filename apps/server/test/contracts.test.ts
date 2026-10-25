@@ -27,6 +27,15 @@ describe('configuration contracts', () => {
     expect(() => parseConfig({ ...config, repositoryPath: 'relative' })).toThrow(/absolute/);
     expect(() => parseConfig({ ...config, hiddenCommand: 'something' })).toThrow();
   });
+
+  it('accepts settings without a task path or token budget and ignores legacy token limits', () => {
+    const config = defaultConfig('/tmp/project');
+    expect(parseConfig({ ...config, taskPath: '' }).taskPath).toBe('');
+    expect(
+      parseConfig({ ...config, limits: { ...config.limits, maxTokens: 1000 } }).limits,
+    ).toEqual(config.limits);
+    expect(config.limits).not.toHaveProperty('maxTokens');
+  });
 });
 
 describe('Markdown task loading and dependency order', () => {
@@ -52,13 +61,40 @@ describe('Markdown task loading and dependency order', () => {
     expect(await loadTasks(path.join(directory, 'z.md'))).toHaveLength(1);
   });
 
-  it('rejects duplicate IDs, missing dependencies, cycles, and malformed task IDs', () => {
+  it('rejects duplicate IDs, missing dependencies, and cycles', () => {
     expect(() => sortTasks([task('a'), task('a')])).toThrow(/Duplicate/);
     expect(() => sortTasks([task('a'), task('A')])).toThrow(/ignoring case/);
     expect(() => sortTasks([task('a', ['missing'])])).toThrow(/Missing dependency/);
     expect(() => sortTasks([task('a', ['b']), task('b', ['a'])])).toThrow(/cycle/);
-    expect(() => task('../escape')).toThrow();
-    expect(() => parseTask('A task without metadata', 'bad.md')).toThrow();
+  });
+
+  it('accepts plain text, headings, optional metadata, and YAML-looking instructions unchanged', async () => {
+    const plain = 'Fix the login redirect and cover it with a regression test.';
+    expect(parseTask(plain, 'fix-login.md')).toMatchObject({
+      id: 'fix-login',
+      title: plain,
+      markdown: plain,
+      dependsOn: [],
+    });
+    expect(parseTask('# Login fix\n\nDo the work.', 'login.md').title).toBe('Login fix');
+    expect(parseTask('---\ntitle: Login fix\n---\nDo the work.', 'login.md')).toMatchObject({
+      id: 'login',
+      title: 'Login fix',
+    });
+    const arbitrary = '---\nthis: [is not valid YAML\n---\nFollow these instructions.';
+    expect(parseTask(arbitrary, 'notes.md').markdown).toBe(arbitrary);
+    const languageTagged = '---javascript\n({ title: "Not metadata" })\n---\nDo the work.';
+    expect(parseTask(languageTagged, 'notes.md').title).toBe('---javascript');
+    expect(
+      parseTask('---\nid: ../escape\ndepends_on: not-a-list\n---\nDo the work.', 'safe.md'),
+    ).toMatchObject({ id: 'safe', dependsOn: [] });
+    const unusual = parseTask(plain, 'Sửa đăng nhập!.md');
+    expect(unusual.id).toMatch(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$/);
+    expect(parseTask(plain, 'Sửa đăng nhập!.md').id).toBe(unusual.id);
+    expect(() => parseTask(' \n ', 'empty.md')).toThrow(/empty/);
+    await writeFile(path.join(directory, 'one.md'), plain);
+    await writeFile(path.join(directory, 'two.md'), '# Another task\nDo this too.');
+    expect((await loadTasks(directory)).map((item) => item.id)).toEqual(['one', 'two']);
   });
 
   it('does not silently accept an empty task directory or unknown selection', async () => {
