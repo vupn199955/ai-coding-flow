@@ -31,6 +31,11 @@ import {
 import { parseReview, renderReview } from './review';
 import { canonicalPath, excludeRuntimeFiles, projectRecord, repositoryRoot } from './projects';
 import { commitTitle } from './workspace';
+import {
+  assertCurrentBranch,
+  assertCurrentBranchSnapshot,
+  checkpointCurrentBranch,
+} from './current-branch';
 
 interface ActiveRun {
   plan: PlanRecord;
@@ -242,6 +247,7 @@ export class FlowController {
       ...structuredClone(override || project?.config || this.config()),
       ...(input.repositoryPath ? { repositoryPath: input.repositoryPath } : {}),
       ...(input.taskPath ? { taskPath: input.taskPath } : {}),
+      ...(input.useWorktree !== undefined ? { useWorktree: input.useWorktree } : {}),
     });
     config.repositoryPath = await repositoryRoot(config.repositoryPath);
     await excludeRuntimeFiles(config.repositoryPath);
@@ -473,6 +479,37 @@ export class FlowController {
     }
   }
 
+  private assertSnapshot(
+    plan: PlanRecord,
+    cwd: string,
+    commit: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return plan.config.useWorktree
+      ? assertCleanCommit(cwd, commit, signal)
+      : assertCurrentBranchSnapshot(plan, commit, signal);
+  }
+
+  private checkpoint(
+    plan: PlanRecord,
+    cwd: string,
+    message: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    return plan.config.useWorktree
+      ? checkpoint(cwd, message, signal)
+      : checkpointCurrentBranch(plan, message, signal);
+  }
+
+  private checkSnapshot(plan: PlanRecord, commit: string, signal: AbortSignal) {
+    return plan.config.useWorktree
+      ? undefined
+      : {
+          tree: plan.currentBranchSnapshot!.tree,
+          verify: () => this.assertSnapshot(plan, plan.workspacePath!, commit, signal),
+        };
+  }
+
   private async execute(run: ActiveRun): Promise<void> {
     const { plan } = run;
     const segmentStarted = Date.now();
@@ -491,7 +528,7 @@ export class FlowController {
         null,
         'controller',
         'log',
-        `Integration workspace: ${plan.workspacePath}\nOutput branch: ${plan.branch}`,
+        `${plan.config.useWorktree ? 'Integration worktree' : 'Current-branch workspace'}: ${plan.workspacePath}\nOutput branch: ${plan.branch}`,
       );
       for (const task of plan.tasks) {
         if (signal.aborted) throw new InterruptedError();
@@ -600,7 +637,8 @@ export class FlowController {
           task.workspacePath!,
           prompt,
         );
-        task.candidateCommit = await checkpoint(
+        task.candidateCommit = await this.checkpoint(
+          plan,
           task.workspacePath!,
           commitTitle(task.title, implementation.text, Boolean(task.candidateCommit)),
           signal,
@@ -623,6 +661,7 @@ export class FlowController {
         task.candidateCommit!,
         signal,
         (message) => this.event(plan.id, task.id, 'verifier', 'log', message),
+        this.checkSnapshot(plan, task.candidateCommit!, signal),
       );
       await this.saveChecks(plan, task.id, task.round, task.fixAttempts, task.checks);
       this.store.savePlan(plan);
@@ -668,7 +707,7 @@ export class FlowController {
         task.workspacePath!,
         prompt,
       );
-      await assertCleanCommit(task.workspacePath!, task.candidateCommit!, signal);
+      await this.assertSnapshot(plan, task.workspacePath!, task.candidateCommit!, signal);
       const review = await this.saveReview(
         plan,
         task.id,
@@ -689,7 +728,7 @@ export class FlowController {
           task.id,
           'controller',
           'state',
-          `${task.id} approved and integrated into the plan branch.`,
+          `${task.id} approved ${plan.config.useWorktree ? 'and integrated into the plan branch' : 'on the current branch'}.`,
         );
       } else {
         task.status = 'fixing';
@@ -717,7 +756,7 @@ export class FlowController {
         (check) => check.status === 'passed' && check.commit === plan.finalCommit,
       )
     ) {
-      await assertCleanCommit(plan.workspacePath!, plan.finalCommit!, signal);
+      await this.assertSnapshot(plan, plan.workspacePath!, plan.finalCommit!, signal);
       return;
     }
     const allRequirements = plan.tasks.map((task) => `${task.id}:\n${task.markdown}`).join('\n\n');
@@ -756,7 +795,8 @@ export class FlowController {
             `Combined check results:\n${JSON.stringify(plan.integrationChecks)}`,
           ].join('\n\n'),
         );
-        plan.finalCommit = await checkpoint(
+        plan.finalCommit = await this.checkpoint(
+          plan,
           plan.workspacePath!,
           commitTitle(`Repair ${plan.name}`, undefined, true),
           signal,
@@ -777,6 +817,7 @@ export class FlowController {
         plan.finalCommit,
         signal,
         (message) => this.event(plan.id, '__plan__', 'verifier', 'log', message),
+        this.checkSnapshot(plan, plan.finalCommit, signal),
       );
       await this.saveChecks(plan, '__plan__', round, plan.attempts.length, plan.integrationChecks);
       this.store.savePlan(plan);
@@ -796,7 +837,7 @@ export class FlowController {
           plan.finalReview,
         ),
       );
-      await assertCleanCommit(plan.workspacePath!, plan.finalCommit, signal);
+      await this.assertSnapshot(plan, plan.workspacePath!, plan.finalCommit, signal);
       plan.finalReview = await this.saveReview(
         plan,
         '__plan__',
@@ -828,6 +869,7 @@ export class FlowController {
           command: check.command,
           status: check.status,
           exitCode: check.exitCode,
+          ...(check.workspaceTree ? { workspaceTree: check.workspaceTree } : {}),
           output: check.output.slice(-16_000),
         })),
         null,
@@ -852,6 +894,7 @@ export class FlowController {
     prompt: string,
   ) {
     const { plan } = run;
+    if (!plan.config.useWorktree) await assertCurrentBranch(plan, run.abort.signal);
     this.enforceBudgets(run);
     if (run.abort.signal.aborted) throw new InterruptedError();
     const config = plan.config.agents[role];
@@ -882,7 +925,12 @@ export class FlowController {
         round,
         config,
         cwd,
-        prompt,
+        prompt: plan.config.useWorktree
+          ? prompt
+          : [
+              'This workflow uses the repository’s current branch and working directory, without worktrees. Preserve existing local edits and staging. Do not change branches or commit; the controller commits only the delta from the workflow baseline. Checks include existing local edits; workspaceTree identifies the full tested files.',
+              prompt,
+            ].join('\n\n'),
         networkAccess: plan.config.networkAccess,
         signal: run.abort.signal,
         onLog: (message) => this.event(plan.id, taskId, role, 'log', message),
@@ -944,6 +992,9 @@ export class FlowController {
       taskId,
       round,
       reviewedCommit: commit,
+      ...(!plan.config.useWorktree
+        ? { reviewedWorkspaceTree: plan.currentBranchSnapshot!.tree }
+        : {}),
       createdAt: new Date().toISOString(),
       markdownPath,
     };

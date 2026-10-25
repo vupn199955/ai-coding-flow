@@ -13,6 +13,7 @@ export const configSchema = z
     repositoryPath: z.string().trim().min(1),
     taskPath: z.string().trim().default(''),
     runtime: z.enum(['codex', 'demo']),
+    useWorktree: z.boolean().default(true),
     agents: z.object({ implementer: agentSchema, reviewer: agentSchema }),
     checks: z
       .array(
@@ -48,6 +49,7 @@ export function defaultConfig(root: string): FlowConfig {
     repositoryPath: root,
     taskPath: path.join(root, 'examples', 'tasks'),
     runtime: 'codex',
+    useWorktree: true,
     agents: {
       implementer: {
         model: 'gpt-6.1-sol',

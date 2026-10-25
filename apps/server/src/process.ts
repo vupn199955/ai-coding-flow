@@ -108,11 +108,17 @@ export function runProcess(
   });
 }
 
-export async function git(cwd: string, args: string[], signal?: AbortSignal): Promise<string> {
+export async function git(
+  cwd: string,
+  args: string[],
+  signal?: AbortSignal,
+  environment?: NodeJS.ProcessEnv,
+): Promise<string> {
   const result = await runProcess('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
     cwd,
     signal,
     timeoutMs: 60_000,
+    ...(environment ? { env: { ...safeEnvironment(), ...environment } } : {}),
   });
   if (result.exitCode !== 0)
     throw new Error(`Git ${args[0]} failed: ${(result.stderr || result.stdout).trim()}`);

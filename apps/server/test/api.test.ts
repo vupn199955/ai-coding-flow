@@ -128,11 +128,20 @@ describe('local controller API', () => {
         body: JSON.stringify(value),
       });
     const instructions = 'Fix a small bug and add a regression test.';
-    const response = await post({ projectId: fixture.projectId, taskText: instructions });
+    const response = await post({
+      projectId: fixture.projectId,
+      taskText: instructions,
+      useWorktree: false,
+    });
     expect(response.status).toBe(201);
     const plan = await response.json();
     expect(plan.name).toBe(instructions);
     expect(plan.tasks[0].markdown).toBe(instructions);
+    expect(plan.config.useWorktree).toBe(false);
+    expect(
+      (await post({ projectId: fixture.projectId, taskText: instructions, useWorktree: 'false' }))
+        .status,
+    ).toBe(400);
     expect((await post({ projectId: fixture.projectId, taskText: ' ' })).status).toBe(400);
     expect(
       (

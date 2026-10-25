@@ -671,7 +671,10 @@ export default function Home() {
                               <div className="run-description">
                                 <GitBranch size={13} />
                                 <span title={plan.branch || plan.config.repositoryPath}>
-                                  {plan.branch || 'Workspace will be created when the run starts'}
+                                  {plan.branch ||
+                                    (plan.config.useWorktree
+                                      ? 'Workspace will be created when the run starts'
+                                      : 'Project’s current branch')}
                                 </span>
                               </div>
                             </div>
@@ -885,7 +888,10 @@ export default function Home() {
                               <CheckCircle2 size={17} />
                               <div>
                                 <strong>Reviewed and ready.</strong> Changes are on{' '}
-                                <code>{plan.branch}</code>. Your source branch is unchanged.
+                                <code>{plan.branch}</code>.{' '}
+                                {plan.config.useWorktree
+                                  ? 'Your source branch is unchanged.'
+                                  : 'Changes were committed directly to your current branch.'}
                                 <small>Final commit: {plan.finalCommit}</small>
                               </div>
                             </div>
@@ -1195,7 +1201,7 @@ export default function Home() {
                       <div className="run-footer">
                         <span>
                           <ShieldCheck size={13} />
-                          Approvals are bound to exact commits.
+                          Approvals track reviewed commits and files.
                         </span>
                         <span>
                           <FolderGit2 size={13} />
@@ -1374,6 +1380,7 @@ export default function Home() {
                     ? { taskText: input.taskText }
                     : { taskPath: input.taskPath }),
                   ...(input.taskIds ? { taskIds: input.taskIds } : {}),
+                  useWorktree: input.useWorktree,
                 }),
               });
               setSelectedId(created.id);
@@ -1819,7 +1826,7 @@ function SettingsView({
               <div className="role-permission">
                 <ShieldCheck size={14} />
                 {role === 'implementer'
-                  ? 'Can edit its isolated workspace. Controller owns commits.'
+                  ? 'Can edit the workflow workspace. Controller owns commits.'
                   : 'Read-only repository access. Cannot change implementation files.'}
               </div>
             </section>
@@ -1889,6 +1896,20 @@ function SettingsView({
                 </div>
               </label>
             </div>
+            <label className="checkbox-field">
+              <input
+                type="checkbox"
+                checked={draft.useWorktree ?? true}
+                onChange={(event) => update('useWorktree', event.target.checked)}
+              />
+              <div>
+                Use worktree by default
+                <small>
+                  Turn off to run new workflows directly in the project’s current branch. Each
+                  workflow can override this.
+                </small>
+              </div>
+            </label>
           </section>
           <section className="settings-card">
             <div className="section-title compact">
@@ -2198,6 +2219,7 @@ function NewRunModal({
     taskPath?: string;
     taskText?: string;
     taskIds?: string[];
+    useWorktree: boolean;
     start: boolean;
   }) => Promise<void>;
   busy: boolean;
@@ -2205,6 +2227,7 @@ function NewRunModal({
   const [name, setName] = useState('');
   const [source, setSource] = useState<'text' | 'files'>('text');
   const [taskText, setTaskText] = useState('');
+  const [useWorktree, setUseWorktree] = useState(config.useWorktree ?? true);
   const repositoryPath = project.repositoryPath;
   const [taskPath, setTaskPath] = useState(config.taskPath);
   const [start, setStart] = useState(!active);
@@ -2229,6 +2252,7 @@ function NewRunModal({
             name,
             repositoryPath,
             start,
+            useWorktree,
             ...(source === 'text' ? { taskText } : { taskPath, ...(tasks ? { taskIds } : {}) }),
           });
         }}
@@ -2247,9 +2271,25 @@ function NewRunModal({
             <span>Repository path</span>
             <input required value={repositoryPath} readOnly />
             <small>
-              Workflow commits contain only edits made in its isolated workspace. Local changes can
-              stay in your repository.
+              {useWorktree
+                ? 'Work in an isolated worktree. Your current branch and local edits stay untouched.'
+                : 'Work and commit directly in this folder’s current branch. Existing local edits are kept separate; pause the workflow before making other edits.'}
             </small>
+          </label>
+          <label className="checkbox-field">
+            <input
+              type="checkbox"
+              checked={useWorktree}
+              onChange={(event) => setUseWorktree(event.target.checked)}
+            />
+            <div>
+              Use worktree
+              <small>
+                {useWorktree
+                  ? 'Create an isolated branch and working directory.'
+                  : 'Use the project folder and its current branch, without creating a worktree.'}
+              </small>
+            </div>
           </label>
           <label className="form-field">
             <span>Task source</span>
@@ -2476,8 +2516,8 @@ function Guide({
           </p>
           <pre>npm test -- --run{'\n'}npm run typecheck</pre>
           <p>
-            The controller creates isolated worktrees. All delivery changes stay on an{' '}
-            <code>ai-flow/…</code> branch.
+            Keep “Use worktree” checked for an isolated <code>ai-flow/…</code> branch, or uncheck it
+            to work and commit directly in the project’s current branch.
           </p>
         </section>
         <section className="settings-card guide-card">

@@ -10,6 +10,7 @@ import {
 import path from 'node:path';
 import type { CheckDefinition, CheckResult, PlanRecord, TaskRecord } from '@ai-flow/shared';
 import { git, runProcess, safeEnvironment } from './process';
+import { prepareCurrentBranch } from './current-branch';
 
 /** Keep ignored local Codex guidance available without staging it as delivery code. */
 export async function preserveProjectGuidance(
@@ -121,6 +122,7 @@ export async function preparePlanWorkspace(
   dataDirectory: string,
   signal?: AbortSignal,
 ): Promise<void> {
+  if (!plan.config.useWorktree) return prepareCurrentBranch(plan, signal);
   const expected = path.join(dataDirectory, 'worktrees', plan.id, 'integration');
   if (plan.workspacePath) {
     if (plan.workspacePath !== expected)
@@ -159,6 +161,14 @@ export async function prepareTaskWorkspace(
   signal?: AbortSignal,
 ): Promise<void> {
   if (!plan.workspacePath) throw new Error('Plan workspace has not been prepared.');
+  if (!plan.config.useWorktree) {
+    if (task.workspacePath && task.workspacePath !== plan.workspacePath)
+      throw new Error('Stored task workspace does not match the project repository.');
+    task.baseCommit ||= await git(plan.workspacePath, ['rev-parse', 'HEAD'], signal);
+    task.workspacePath = plan.workspacePath;
+    task.branch = plan.branch;
+    return;
+  }
   const expected = path.join(dataDirectory, 'worktrees', plan.id, 'tasks', task.id);
   await mkdir(path.dirname(expected), { recursive: true });
   if (task.workspacePath) {
@@ -235,6 +245,15 @@ export async function integrateTask(
   if (!plan.workspacePath || !task.approvedCommit || !task.baseCommit)
     throw new Error('Task has no approved snapshot to integrate.');
   const current = await git(plan.workspacePath, ['rev-parse', 'HEAD'], signal);
+  if (!plan.config.useWorktree) {
+    await git(
+      plan.workspacePath,
+      ['merge-base', '--is-ancestor', task.approvedCommit, current],
+      signal,
+    );
+    task.integratedCommit = task.approvedCommit;
+    return;
+  }
   if (task.integratedCommit) {
     if (task.integratedCommit !== task.approvedCommit)
       throw new Error('Stored integration does not match its approved commit.');
@@ -260,6 +279,7 @@ export async function runChecks(
   commit: string,
   signal: AbortSignal,
   onLog: (message: string) => void,
+  snapshot?: { tree: string; verify: () => Promise<void> },
 ): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   for (const check of checks) {
@@ -292,11 +312,13 @@ export async function runChecks(
       output,
       durationMs: result.durationMs,
       commit,
+      ...(snapshot ? { workspaceTree: snapshot.tree } : {}),
       startedAt,
     });
     onLog(`${check.name}: ${results.at(-1)!.status} (${result.durationMs}ms)`);
   }
-  await assertCleanCommit(cwd, commit, signal);
+  if (snapshot) await snapshot.verify();
+  else await assertCleanCommit(cwd, commit, signal);
   return results;
 }
 

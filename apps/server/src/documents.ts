@@ -24,6 +24,7 @@ export function writePlanDocuments(plan: PlanRecord): void {
       '',
       `- Project: ${plan.config.repositoryPath}`,
       `- Workflow: ${plan.id}`,
+      `- Execution: ${plan.config.useWorktree ? 'isolated worktree' : 'current branch'}`,
       `- Created: ${plan.createdAt}`,
       '',
       '## Tasks',

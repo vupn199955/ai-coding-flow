@@ -24,6 +24,7 @@ export interface FlowConfig {
   repositoryPath: string;
   taskPath: string;
   runtime: RuntimeMode;
+  useWorktree: boolean;
   agents: Record<AgentRole, AgentConfig>;
   checks: CheckDefinition[];
   limits: {
@@ -67,6 +68,8 @@ export interface CheckResult {
   output: string;
   durationMs: number;
   commit: string;
+  /** Full working-tree snapshot tested in current-branch mode, including existing local edits. */
+  workspaceTree?: string;
   startedAt: string;
 }
 
@@ -92,6 +95,7 @@ export interface ReviewRecord extends ReviewVerdict {
   taskId: string;
   round: number;
   reviewedCommit: string;
+  reviewedWorkspaceTree?: string;
   createdAt: string;
   markdownPath: string;
 }
@@ -158,6 +162,8 @@ export interface PlanRecord {
   workspacePath?: string;
   baseCommit?: string;
   finalCommit?: string;
+  /** Durable baseline for committing only workflow edits in the source working directory. */
+  currentBranchSnapshot?: { head: string; tree: string };
   integrationChecks: CheckResult[];
   finalReview?: ReviewRecord;
   error?: string;
@@ -208,4 +214,5 @@ export interface CreatePlanInput {
   taskPath?: string;
   taskText?: string;
   taskIds?: string[];
+  useWorktree?: boolean;
 }

@@ -22,7 +22,7 @@ flowchart TD
 
 ## Data contracts
 
-Shared contracts live in `packages/shared/src/index.ts`. A plan captures repository/task paths, the source base commit, the full task Markdown, agent settings, checks, budgets, execution history, task reviews, and final verification. SQLite stores complete plan snapshots and an append-only activity stream. Projects own a canonical repository path and editable defaults; every new plan has a project ID and captures those defaults. Generated Markdown, reviews, and check artifacts live in `<repository>/.ai-flow/runs/<run-id>` outside the role’s worktree. Worktrees live in `<repository>/.ai-flow/worktrees/<run-id>`. The controller directory holds the global SQLite registry. Legacy plans retain their captured workspace/report paths and are associated with projects during startup migration.
+Shared contracts live in `packages/shared/src/index.ts`. A plan captures repository/task paths, the source base commit, the full task Markdown, agent settings, checks, budgets, execution history, task reviews, and final verification. SQLite stores complete plan snapshots and an append-only activity stream. Projects own a canonical repository path and editable defaults; every new plan has a project ID and captures those defaults. Generated Markdown, reviews, and check artifacts live in `<repository>/.ai-flow/runs/<run-id>` outside the role’s worktree. When `config.useWorktree` is true (the backward-compatible default), worktrees live in `<repository>/.ai-flow/worktrees/<run-id>`. When false, the integration workspace and every task workspace are the project repository itself, on its checked-out branch. `POST /api/plans` accepts an optional `useWorktree` boolean to override project defaults for that run. The controller directory holds the global SQLite registry. Legacy plans retain their captured workspace/report paths and are associated with projects during startup migration.
 
 A task has a stable ID, title, Markdown, dependencies, phase, current round, repair count, base/candidate/approved/integrated commits, latest check results, and all review rounds. One task is simply a one-node plan. `POST /api/plans` accepts `taskText` for a single direct-input task, mutually exclusive with `taskPath` and `taskIds`. A name is optional. File tasks accept arbitrary text/Markdown; frontmatter is optional, IDs default to safe filename-derived values, and the complete original text is preserved. Empty tasks are rejected.
 
@@ -35,15 +35,23 @@ Task phases: `queued → implementing → checking → reviewing → approved`. 
 ## Commit and approval invariants
 
 1. Source repositories must have a commit at plan creation. No source working-tree cleanliness check is performed. The source base commit is captured immediately; pre-existing staged, unstaged, and untracked files stay in the source repository and are excluded from workflow commits.
-2. The controller creates an integration worktree and one task worktree at a time from the currently integrated result. Separate ref namespaces avoid Git’s branch-prefix collision rule.
+2. With worktrees enabled, the controller creates an integration worktree and one task worktree at a time from the currently integrated result. Separate ref namespaces avoid Git’s branch-prefix collision rule.
 3. The controller stages and commits implementation output. Agents are instructed not to commit, push, merge, or deploy.
 4. Checks execute against the candidate commit. A tracked or untracked workspace change after checks invalidates that snapshot. Repositories should ignore normal build/test artifacts. Task worktrees live under a separate `tasks/` directory so task IDs cannot collide with the integration workspace.
 5. The reviewer receives requirements, exact base/candidate commits, verifier results, and the prior review when present. It gets a fresh session and read-only repository policy.
 6. Structured reviews are schema-validated. Approval with blocking findings and rejection without blocking findings are invalid. Optional suggestions do not hold the loop open.
-7. A clean approved commit is fast-forwarded into the integration branch. Integration is idempotent and checks already integrated task commits are ancestors of the current branch.
+7. With worktrees enabled, a clean approved commit is fast-forwarded into the integration branch. In current-branch mode, task commits are already on the output branch and integration only verifies ancestry. Integration is idempotent and checks already integrated task commits are ancestors of the current branch.
 8. The full plan receives combined checks and a fresh final review. Integration defects return to the implementer with all task requirements and unit-test obligations.
 
 The checker cannot establish semantic test completeness; reviewer instructions explicitly require assessment of new/updated behavior tests. AI review can make mistakes, and task-level approval does not replace final integrated verification.
+
+## Current-branch execution
+
+`useWorktree: false` captures the checked-out branch, HEAD, and a Git tree of the working files at first execution, without changing the user’s index. The baseline persists across pause/restart, including interrupted agent edits. Detached HEAD is rejected; branch/HEAD changes outside the controller stop the run rather than redirecting its commits.
+
+The controller computes the binary diff from the previous working-files baseline to the agent output. It applies that delta independently to temporary indexes initialized from HEAD and the user’s existing index. A three-way application supports non-overlapping edits in a partially staged file. A conflict leaves HEAD, files, and the real index unchanged. A successful checkpoint advances the current branch with only the workflow delta, installs the updated index with user staging preserved, and updates the baseline. Private `refs/ai-flow-snapshots/<run-id>` refs retain baseline objects for resume. A durable checkpoint journal allows recovery between the branch-ref update, index replacement, and SQLite persistence.
+
+Checks and reviews run against the live files, including existing user edits. Records include `workspaceTree` / `reviewedWorkspaceTree` alongside the tested/reviewed commit; post-check/review validation compares the live tree with that snapshot instead of requiring a clean directory. Current-branch mode requires pausing before other edits: changes made concurrently in the directory cannot be distinguished from agent output.
 
 ## Runtime adapter
 

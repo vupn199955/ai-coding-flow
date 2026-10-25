@@ -81,6 +81,11 @@ export function renderReview(review: ReviewRecord): string {
     '',
     `- **Status:** ${review.verdict}`,
     `- **Reviewed commit:** \`${review.reviewedCommit}\``,
+    ...(review.reviewedWorkspaceTree
+      ? [
+          `- **Working files snapshot (includes existing local edits):** \`${review.reviewedWorkspaceTree}\``,
+        ]
+      : []),
     `- **Recorded:** ${review.createdAt}`,
     '',
     review.summary,

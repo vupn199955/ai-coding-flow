@@ -192,115 +192,129 @@ describe('implementation / review controller', () => {
     );
   });
 
-  it('repairs failed independent checks before requesting a review', async () => {
-    const demo = new DemoRuntime();
-    let initialImplementation = true;
-    const runtime: AgentRuntime = {
-      inspect: () => demo.inspect(),
-      run: async (request) => {
-        const result = await demo.run(request);
-        if (
-          initialImplementation &&
-          request.role === 'implementer' &&
-          request.taskId === 'greeting'
-        ) {
-          initialImplementation = false;
-          await writeFile(
-            path.join(request.cwd, 'greeting.js'),
-            "export function greet() { return 'incorrect'; }\n",
-          );
-        }
-        return result;
-      },
-    };
-    controller = new FlowController(store, process.cwd(), { runtimeFactory: () => runtime });
-    const plan = await controller.createDemo();
-    controller.updateLimits(plan.id, { ...plan.config.limits, maxFixAttempts: 1 });
-    controller.start(plan.id);
-    await controller.waitForIdle();
-    const result = controller.requirePlan(plan.id);
-    expect(result.status, result.error).toBe('completed');
-    expect(result.tasks[0]?.fixAttempts).toBe(1);
-    expect(
-      result.attempts.filter(
-        (attempt) => attempt.taskId === 'greeting' && attempt.role === 'implementer',
-      ),
-    ).toHaveLength(3);
-    expect(result.tasks[0]?.checks.every((check) => check.status === 'passed')).toBe(true);
-  });
+  it.each([true, false])(
+    'repairs failed independent checks before requesting a review (useWorktree=%s)',
+    async (useWorktree) => {
+      const demo = new DemoRuntime();
+      let initialImplementation = true;
+      const runtime: AgentRuntime = {
+        inspect: () => demo.inspect(),
+        run: async (request) => {
+          const result = await demo.run(request);
+          if (
+            initialImplementation &&
+            request.role === 'implementer' &&
+            request.taskId === 'greeting'
+          ) {
+            initialImplementation = false;
+            await writeFile(
+              path.join(request.cwd, 'greeting.js'),
+              "export function greet() { return 'incorrect'; }\n",
+            );
+          }
+          return result;
+        },
+      };
+      controller = new FlowController(store, process.cwd(), { runtimeFactory: () => runtime });
+      controller.updateConfig({ ...controller.config(), useWorktree });
+      const plan = await controller.createDemo();
+      controller.updateLimits(plan.id, { ...plan.config.limits, maxFixAttempts: 1 });
+      controller.start(plan.id);
+      await controller.waitForIdle();
+      const result = controller.requirePlan(plan.id);
+      expect(result.status, result.error).toBe('completed');
+      expect(result.tasks[0]?.fixAttempts).toBe(1);
+      expect(
+        result.attempts.filter(
+          (attempt) => attempt.taskId === 'greeting' && attempt.role === 'implementer',
+        ),
+      ).toHaveLength(3);
+      expect(result.tasks[0]?.checks.every((check) => check.status === 'passed')).toBe(true);
+    },
+  );
 
-  it('repairs a final plan change request and reviews the new combined commit', async () => {
-    const demo = new DemoRuntime();
-    const runtime: AgentRuntime = {
-      inspect: () => demo.inspect(),
-      run: async (request) => {
-        if (request.taskId === '__plan__' && request.role === 'reviewer' && request.round === 1) {
-          const review = {
-            verdict: 'changes_requested' as const,
-            summary: 'Document the utility usage.',
-            findings: [
-              {
-                id: 'P-001',
-                severity: 'medium' as const,
-                blocking: true,
-                file: 'README.md',
-                line: null,
-                problem: 'Usage is missing.',
-                requestedChange: 'Document both utilities.',
-                requiredTest: 'Verify documented exports exist.',
-              },
-            ],
-          };
-          return { text: JSON.stringify(review), review };
-        }
-        if (request.taskId === '__plan__' && request.role === 'implementer') {
-          await writeFile(
-            path.join(request.cwd, 'README.md'),
-            '# Utility usage\n\nImport greet from greeting.js and farewell from farewell.js. Both functions normalize names and default to world.\n',
-          );
-          return { text: 'Addressed P-001 by documenting the two existing, tested utilities.' };
-        }
-        return demo.run(request);
-      },
-    };
-    controller = new FlowController(store, process.cwd(), { runtimeFactory: () => runtime });
-    const plan = await controller.createDemo();
-    controller.start(plan.id);
-    await controller.waitForIdle();
-    const result = controller.requirePlan(plan.id);
-    expect(result.status, result.error).toBe('completed');
-    expect(result.finalReview?.round).toBe(2);
-    expect(result.finalReview?.reviewedCommit).toBe(result.finalCommit);
-    expect(result.finalCommit).not.toBe(result.tasks[1]?.approvedCommit);
-    expect(await readFile(path.join(result.workspacePath!, 'README.md'), 'utf8')).toContain(
-      'Utility usage',
-    );
-  });
+  it.each([true, false])(
+    'repairs a final plan change request and reviews the new combined commit (useWorktree=%s)',
+    async (useWorktree) => {
+      const demo = new DemoRuntime();
+      const runtime: AgentRuntime = {
+        inspect: () => demo.inspect(),
+        run: async (request) => {
+          if (request.taskId === '__plan__' && request.role === 'reviewer' && request.round === 1) {
+            const review = {
+              verdict: 'changes_requested' as const,
+              summary: 'Document the utility usage.',
+              findings: [
+                {
+                  id: 'P-001',
+                  severity: 'medium' as const,
+                  blocking: true,
+                  file: 'README.md',
+                  line: null,
+                  problem: 'Usage is missing.',
+                  requestedChange: 'Document both utilities.',
+                  requiredTest: 'Verify documented exports exist.',
+                },
+              ],
+            };
+            return { text: JSON.stringify(review), review };
+          }
+          if (request.taskId === '__plan__' && request.role === 'implementer') {
+            await writeFile(
+              path.join(request.cwd, 'README.md'),
+              '# Utility usage\n\nImport greet from greeting.js and farewell from farewell.js. Both functions normalize names and default to world.\n',
+            );
+            return { text: 'Addressed P-001 by documenting the two existing, tested utilities.' };
+          }
+          return demo.run(request);
+        },
+      };
+      controller = new FlowController(store, process.cwd(), { runtimeFactory: () => runtime });
+      controller.updateConfig({ ...controller.config(), useWorktree });
+      const plan = await controller.createDemo();
+      controller.start(plan.id);
+      await controller.waitForIdle();
+      const result = controller.requirePlan(plan.id);
+      expect(result.status, result.error).toBe('completed');
+      expect(result.finalReview?.round).toBe(2);
+      expect(result.finalReview?.reviewedCommit).toBe(result.finalCommit);
+      expect(result.finalCommit).not.toBe(result.tasks[1]?.approvedCommit);
+      expect(await readFile(path.join(result.workspacePath!, 'README.md'), 'utf8')).toContain(
+        'Utility usage',
+      );
+    },
+  );
 
-  it('resumes after all tasks are integrated without trying to integrate an earlier task again', async () => {
-    const demo = new DemoRuntime();
-    let interrupted = false;
-    const runtime: AgentRuntime = {
-      inspect: () => demo.inspect(),
-      run: async (request) => {
-        if (!interrupted && request.taskId === '__plan__') {
-          interrupted = true;
-          controller.stop(request.planId, 'pause');
-          throw new InterruptedError();
-        }
-        return demo.run(request);
-      },
-    };
-    controller = new FlowController(store, process.cwd(), { runtimeFactory: () => runtime });
-    const plan = await controller.createDemo();
-    controller.start(plan.id);
-    await controller.waitForIdle();
-    expect(controller.requirePlan(plan.id).status).toBe('paused');
-    expect(controller.requirePlan(plan.id).tasks.every((task) => task.integratedCommit)).toBe(true);
-    controller.start(plan.id);
-    await controller.waitForIdle();
-    expect(controller.requirePlan(plan.id).status).toBe('completed');
-  });
+  it.each([true, false])(
+    'resumes after all tasks are integrated without trying to integrate an earlier task again (useWorktree=%s)',
+    async (useWorktree) => {
+      const demo = new DemoRuntime();
+      let interrupted = false;
+      const runtime: AgentRuntime = {
+        inspect: () => demo.inspect(),
+        run: async (request) => {
+          if (!interrupted && request.taskId === '__plan__') {
+            interrupted = true;
+            controller.stop(request.planId, 'pause');
+            throw new InterruptedError();
+          }
+          return demo.run(request);
+        },
+      };
+      controller = new FlowController(store, process.cwd(), { runtimeFactory: () => runtime });
+      controller.updateConfig({ ...controller.config(), useWorktree });
+      const plan = await controller.createDemo();
+      controller.start(plan.id);
+      await controller.waitForIdle();
+      expect(controller.requirePlan(plan.id).status).toBe('paused');
+      expect(controller.requirePlan(plan.id).tasks.every((task) => task.integratedCommit)).toBe(
+        true,
+      );
+      controller.start(plan.id);
+      await controller.waitForIdle();
+      expect(controller.requirePlan(plan.id).status).toBe('completed');
+    },
+  );
 
   it('does not integrate code when a runtime fails or review output is invalid', async () => {
     const demo = new DemoRuntime();

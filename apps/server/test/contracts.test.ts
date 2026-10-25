@@ -36,6 +36,14 @@ describe('configuration contracts', () => {
     ).toEqual(config.limits);
     expect(config.limits).not.toHaveProperty('maxTokens');
   });
+
+  it('defaults legacy settings to worktrees and allows explicitly disabling them', () => {
+    const { useWorktree, ...legacy } = defaultConfig('/tmp/project');
+    expect(useWorktree).toBe(true);
+    expect(parseConfig(legacy).useWorktree).toBe(true);
+    expect(parseConfig({ ...legacy, useWorktree: false }).useWorktree).toBe(false);
+    expect(() => parseConfig({ ...legacy, useWorktree: 'false' })).toThrow();
+  });
 });
 
 describe('Markdown task loading and dependency order', () => {

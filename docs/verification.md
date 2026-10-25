@@ -4,7 +4,7 @@ Verified locally on **2026-10-25** with Node.js 22.13.0.
 
 ## Automated checks
 
-- **48 tests passed** across eight files.
+- **57 tests passed** across nine files.
 - TypeScript checks passed for the server, dashboard, and shared contracts.
 - The production build passed.
 - Formatting checks passed.
@@ -19,6 +19,14 @@ Tests exercise the Codex JSON-RPC handshake with a fake executable, model/effort
 - Verified project deletion stops active execution, removes queued/cancelled workflows and their events, preserves other projects, and remains deleted after restart.
 - Verified large cumulative token reports do not stop execution or prevent resume, and legacy token limits are removed from saved settings and runs.
 - Checked the dashboard: text input alone enables creation, Markdown input/preview remains available, project deletion explains file retention, and settings show only retry/runtime limits. These UI checks did not start model calls or delete existing projects.
+
+## Optional worktree update
+
+- Verified the checked-by-default **Use worktree** checkbox in **New workflow**. Unchecking it displays current-branch execution and still allows direct text input. Project settings expose **Use worktree by default**. No workflow was started against an existing user project during UI verification.
+- Controller tests run dependent tasks directly in the repository, preserve user staging and untracked files, commit non-overlapping changes within a partially staged file, and create no worktrees. Inseparable overlapping edits preserve the real index and HEAD.
+- Recovery tests preserve partial implementation across controller restart and finish a checkpoint interrupted between updating the branch and replacing the index. Branch changes, detached HEAD, and post-snapshot file changes are detected.
+- Failed-check repair, final-plan repair, and resume after integration pass in both worktree and current-branch modes. API validation captures the per-workflow boolean, and legacy configurations retain worktree mode.
+- TypeScript checks, production build, and formatting checks passed. These tests made no paid model calls.
 
 ## Project workflow update
 

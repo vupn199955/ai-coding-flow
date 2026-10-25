@@ -31,11 +31,15 @@ The dashboard listens on port `3000`; the local controller listens on `4310`. Bo
 3. Open **Agents**. The model catalog loads automatically; use **Refresh Codex catalog** to retry. Select the model and reasoning effort for each role, then save. GPT-6.1 Sol and Ultra are selectable when advertised by your runtime. Unsupported combinations fail explicitly; they are never silently replaced. A catalog entry is not an entitlement guarantee—actual model access is confirmed by a successful invocation.
 4. Open the project’s **Settings**. The repository needs at least one commit; local staged, unstaged, and untracked changes can stay in place. Optionally set a default task path for workflows created from one `.md` file or a directory of `.md` files.
 5. Set the repository’s actual checks. At least one must be a unit-test check. Configure active runtime, check-repair, and review-round limits. Workflows have no token limit.
-6. Click **New workflow** and type task instructions directly. A run name is optional. For file-based work, switch **Task source** to **Markdown file or directory** and optionally preview/select tasks; required dependencies are included automatically. Start the run and follow Activity, Reviews, Checks, Changes, and Usage.
+6. Click **New workflow** and type task instructions directly. A run name is optional. For file-based work, switch **Task source** to **Markdown file or directory** and optionally preview/select tasks; required dependencies are included automatically. Leave **Use worktree** checked for isolation, or uncheck it to work in the project folder and commit on its current branch. Start the run and follow Activity, Reviews, Checks, Changes, and Usage.
 
 Project settings apply to new workflows; existing workflows retain their captured settings. **Global defaults** in the sidebar supplies starting model, instruction, check, and limit settings for new projects. Task paths remain independent inputs and can point outside the repository.
 
-You can keep working in the source repository: execution takes place in managed Git worktrees based on the captured HEAD commit. Existing local edits stay in the source repository and are excluded from workflow commits. AI Flow does not switch your source branch, automatically merge into it, push code, or deploy the result.
+With **Use worktree** enabled (the default), execution takes place in managed Git worktrees based on the captured HEAD commit. Existing local edits stay in the source repository and are excluded from workflow commits. AI Flow does not switch your source branch or automatically merge into it.
+
+Uncheck **Use worktree** in **New workflow** to run every task, check, and review in the project’s existing directory and commit directly to its current branch. No worktree or output branch is created. The current branch and starting files are captured when execution starts. Existing staged, unstaged, and untracked edits are kept separate; temporary indexes commit only the workflow delta and preserve user staging. If overlapping changes cannot be separated safely, the workflow needs attention and leaves files, staging, and HEAD intact. Checks include existing local edits; reports record the full working-files snapshot as well as the commit. Pause a current-branch workflow before making other edits or changing branches.
+
+Project **Settings → Use worktree by default** controls the initial checkbox for new workflows. Each workflow captures its own choice. Existing workflows without this setting retain worktree mode. Neither mode pushes code or deploys the result.
 
 ### Task instructions
 
@@ -98,7 +102,7 @@ Use the trash button beside a project in the sidebar to **Delete project & workf
 
 Use **Remove workflow** on a workflow card or its detail header to remove it and its activity from the dashboard. Active work is stopped before removal. Project documents, worktrees, branches, and commits are retained on disk.
 
-New workflows keep generated documents, reviews, check results, and worktrees inside the selected project. The original task input is preserved; each workflow captures a project-local copy:
+New workflows keep generated documents, reviews, and check results inside the selected project. Worktree mode also stores managed worktrees there. The original task input is preserved; each workflow captures a project-local copy:
 
 ```text
 <selected-project>/.ai-flow/
@@ -110,18 +114,18 @@ New workflows keep generated documents, reviews, check results, and worktrees in
       progress.md
       reports/                 # Markdown/JSON reviews and check results
     final/reports/
-  worktrees/<run-id>/
+  worktrees/<run-id>/           # only with Use worktree enabled
     integration/
     tasks/<task-id>/
 ```
 
 AI Flow excludes `.ai-flow/` through Git’s local `info/exclude`, keeping generated progress out of delivery commits without editing the project’s `.gitignore`. The global controller directory retains SQLite and demo fixtures. Existing workflows are grouped into projects by their repository paths and retain their original workspace/report locations for resumability.
 
-Codex runs from the project worktree and follows applicable `AGENTS.md`, `AGENTS.override.md`, scoped guidance, local skills, and supported project configuration/rules. Ignored local guidance is copied into managed worktrees without staging it. Symlinked guidance is not copied. Project `.codex/config.toml` and rules are subject to the installed Codex runtime’s trust settings. AI Flow checks native configuration layers before any model turn; disabled project rules stop the workflow with the runtime’s exact trust instructions. Configure trust in Codex, refresh the catalog, and resume. AI Flow does not modify your global Codex trust settings.
+Codex runs from the selected workflow directory and follows applicable `AGENTS.md`, `AGENTS.override.md`, scoped guidance, local skills, and supported project configuration/rules. Ignored local guidance is copied into managed worktrees without staging it. Symlinked guidance is not copied. Project `.codex/config.toml` and rules are subject to the installed Codex runtime’s trust settings. AI Flow checks native configuration layers before any model turn; disabled project rules stop the workflow with the runtime’s exact trust instructions. Configure trust in Codex, refresh the catalog, and resume. AI Flow does not modify your global Codex trust settings.
 
 The controller automatically commits task changes with concise titles before checks and independent review. It uses the implementer’s suggested title following project conventions, with a deterministic title based on the task when unavailable. Repairs receive separate commits; approvals remain bound to the exact tested commit.
 
-The plan’s final branch is `ai-flow/<run-id>`. Task branches use `ai-flow-tasks/<run-id>/<task-id>`. The dashboard provides the exact final commit, a combined diff, and downloadable review Markdown. Inspect and merge the output branch through your normal process.
+With worktrees enabled, the plan’s final branch is `ai-flow/<run-id>` and task branches use `ai-flow-tasks/<run-id>/<task-id>`. With worktrees disabled, all task commits go directly to the existing current branch. The dashboard provides the exact final commit, a combined diff, and downloadable review Markdown. Inspect and merge an isolated output branch through your normal process; current-branch mode already has its commits on your branch.
 
 ## Usage accounting
 

@@ -40,6 +40,7 @@ const createPlanSchema = z
       .refine((text) => text.trim().length > 0, 'Enter task instructions.')
       .optional(),
     taskIds: z.array(z.string().min(1)).max(200).optional(),
+    useWorktree: z.boolean().optional(),
   })
   .strict()
   .refine(
