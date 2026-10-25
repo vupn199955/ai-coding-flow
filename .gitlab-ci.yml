@@ -1,0 +1,17 @@
+image: node:22-bookworm
+stages:
+  - verify
+cache:
+  key:
+    files:
+      - package-lock.json
+  paths:
+    - .npm/
+verify:
+  stage: verify
+  script:
+    - npm ci --cache .npm --prefer-offline
+    - npm test
+    - npm run typecheck
+    - npm run build
+    - npm audit --audit-level=high

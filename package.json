@@ -1,0 +1,35 @@
+{
+  "name": "ai-flow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local, review-driven coding agent workflow with a live dashboard.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "overrides": {
+    "multer": "^2.5.0"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/build.mjs",
+    "start": "node scripts/start.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "npm run build -w @ai-flow/shared && npm run typecheck --workspaces --if-present",
+    "demo": "node scripts/demo.mjs",
+    "verify:live": "tsx scripts/verify-live.ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "prettier": "^3.9.10",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.5"
+  }
+}

@@ -1,0 +1,9 @@
+node_modules
+.git
+.ai-flow
+**/.next
+**/dist
+coverage
+.env
+.env.local
+*.tsbuildinfo

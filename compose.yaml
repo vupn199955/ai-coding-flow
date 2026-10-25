@@ -1,0 +1,18 @@
+services:
+  ai-flow:
+    build: .
+    ports:
+      - '127.0.0.1:3000:3000'
+    environment:
+      FLOW_DATA_DIR: /data
+      FLOW_WEB_HOST: 0.0.0.0
+    volumes:
+      - flow-data:/data
+      - codex-auth:/root/.codex
+      - ${FLOW_REPOSITORIES_DIR:-..}:/workspace/repos
+    init: true
+    restart: unless-stopped
+
+volumes:
+  flow-data:
+  codex-auth:

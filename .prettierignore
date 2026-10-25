@@ -1,0 +1,8 @@
+node_modules
+.ai-flow
+**/.next
+**/dist
+package-lock.json
+apps/web/next-env.d.ts
+apps/web/AGENTS.md
+coverage

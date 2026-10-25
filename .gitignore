@@ -1,0 +1,55 @@
+# Dependencies and package-manager caches
+node_modules/
+.npm/
+.pnpm-store/
+
+# Local AI Flow state: databases, logs, reports, demos, and Git worktrees
+.ai-flow/
+
+# Build output and generated framework files (all workspaces)
+dist/
+build/
+out/
+.next/
+.turbo/
+.cache/
+.swc/
+cdk.out/
+*.tsbuildinfo
+next-env.d.ts
+
+# Test results and coverage
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+blob-report/
+
+# Environment settings and secrets; keep example templates versioned
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Logs and temporary files
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+tmp/
+temp/
+.tmp/
+*.swp
+*.swo
+*~
+.eslintcache
+.stylelintcache
+
+# Local IDE and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
