@@ -37,6 +37,7 @@ import {
   ShieldCheck,
   Square,
   Terminal,
+  Trash2,
   Workflow,
   X,
   Zap,
@@ -48,6 +49,7 @@ import type {
   FlowConfig,
   FlowEvent,
   PlanRecord,
+  ProjectRecord,
   ReviewRecord,
   TaskDefinition,
 } from '@ai-flow/shared';
@@ -59,6 +61,8 @@ import {
   statusLabel,
   usageSummary,
 } from './helpers';
+
+import { FolderPicker } from './folder-picker';
 
 type View = 'workflows' | 'agents' | 'settings' | 'guide';
 type Tab = 'activity' | 'reviews' | 'checks' | 'changes' | 'usage';
@@ -94,6 +98,10 @@ function Status({ status, small = false }: { status: string; small?: boolean }) 
 export default function Home() {
   const [state, setState] = useState<DashboardState | null>(null);
   const [view, setView] = useState<View>('workflows');
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [showAddProject, setShowAddProject] = useState(false);
+  const [removeId, setRemoveId] = useState<string | null>(null);
+  const requestedCatalogs = useRef(new Set<string>());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('activity');
@@ -111,6 +119,15 @@ export default function Home() {
   const logEnd = useRef<HTMLDivElement>(null);
   const refreshing = useRef(false);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (showNewRun || showAddProject || removeId) setNotice(null);
+  }, [showNewRun, showAddProject, removeId]);
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(null), notice.error ? 8000 : 5000);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
   const refresh = useCallback(async () => {
     if (refreshing.current) return;
@@ -151,7 +168,40 @@ export default function Home() {
     };
   }, [refresh]);
 
-  const plan = state?.plans.find((item) => item.id === selectedId) || state?.plans[0];
+  const project =
+    selectedProjectId === 'global'
+      ? undefined
+      : state?.projects.find((item) => item.id === selectedProjectId) || state?.projects[0];
+  const plans = state?.plans.filter((item) => item.projectId === project?.id) || [];
+  const projectActive = plans.some((item) => state?.activePlanIds.includes(item.id));
+  const plan = plans.find((item) => item.id === selectedId) || plans[0];
+  const savedConfig = project?.config || state?.config;
+  const runtime = project
+    ? state?.projectRuntimes[project.id] || null
+    : state?.projectRuntimes.global || null;
+
+  const selectProject = (next: ProjectRecord) => {
+    setSelectedProjectId(next.id);
+    setSelectedId(null);
+    setDraft(structuredClone(next.config));
+    setView('workflows');
+  };
+  useEffect(() => {
+    setDraft(savedConfig ? structuredClone(savedConfig) : null);
+    setSelectedId(null);
+  }, [project?.id]);
+  useEffect(() => {
+    if (!state) return;
+    const key = project?.id || 'global';
+    if (runtime || requestedCatalogs.current.has(key)) return;
+    requestedCatalogs.current.add(key);
+    void api<NonNullable<DashboardState['runtime']>>(
+      `/runtime/refresh${project ? `?projectId=${encodeURIComponent(project.id)}` : ''}`,
+      { method: 'POST', body: '{}' },
+    )
+      .then(() => void refresh())
+      .catch(() => {});
+  }, [project?.id, runtime, state, refresh]);
   const selectedTask = plan?.tasks.find((task) => task.id === selectedTaskId);
   const runningTask = plan?.tasks.find((task) =>
     ['implementing', 'checking', 'reviewing', 'fixing'].includes(task.status),
@@ -161,10 +211,10 @@ export default function Home() {
     .find((attempt) => attempt.status === 'running');
   const progress = plan ? planProgress(plan) : null;
   const usage = usageSummary(plan?.attempts || []);
-  const allAttempts = state?.plans.flatMap((item) => item.attempts) || [];
+  const allAttempts = plans.flatMap((item) => item.attempts) || [];
   const allUsage = usageSummary(allAttempts);
   const completedTasks =
-    state?.plans.reduce(
+    plans.reduce(
       (sum, item) => sum + item.tasks.filter((task) => task.status === 'approved').length,
       0,
     ) || 0;
@@ -184,7 +234,7 @@ export default function Home() {
       : runningTask?.checks ||
         [...(plan?.tasks || [])].reverse().find((task) => task.checks.length)?.checks ||
         [];
-  const dirty = Boolean(draft && state && JSON.stringify(draft) !== JSON.stringify(state.config));
+  const dirty = Boolean(draft && state && JSON.stringify(draft) !== JSON.stringify(savedConfig));
 
   useEffect(() => {
     setSelectedTaskId(null);
@@ -230,6 +280,7 @@ export default function Home() {
           body: JSON.stringify({ start: true }),
         });
         setSelectedId(created.id);
+        setSelectedProjectId(created.projectId || null);
         setView('workflows');
         setTab('activity');
       },
@@ -243,12 +294,15 @@ export default function Home() {
     void act(
       'models',
       async () => {
-        const runtime = await api<DashboardState['runtime']>('/runtime/refresh', {
-          method: 'POST',
-          body: '{}',
-        });
-        setState((current) => (current ? { ...current, runtime } : current));
-        if (!runtime?.available || !runtime.authenticated)
+        const runtime = await api<DashboardState['runtime']>(
+          `/runtime/refresh${project ? `?projectId=${encodeURIComponent(project.id)}` : ''}`,
+          {
+            method: 'POST',
+            body: '{}',
+          },
+        );
+        await refresh();
+        if (!runtime?.available || !runtime.authenticated || runtime.projectConfigError)
           throw new Error(runtime?.message || 'Codex is unavailable.');
       },
       'Codex model catalog refreshed.',
@@ -273,12 +327,65 @@ export default function Home() {
           </span>
         </a>
         <div className="workspace-label">
-          <span className="workspace-avatar">L</span>
+          <span className="workspace-avatar">{project?.name[0]?.toUpperCase() || 'L'}</span>
           <div>
-            Local workspace<small>Personal environment</small>
+            {project?.name || 'Local workspace'}
+            <small>{project ? 'Project workspace' : 'Add a project to begin'}</small>
           </div>
           <span className="local-dot" />
         </div>
+        <div className="project-list">
+          <div className="project-list-heading">
+            <span>PROJECTS</span>
+            <button
+              className="icon-button"
+              aria-label="Add project"
+              onClick={() => setShowAddProject(true)}
+            >
+              <Plus size={16} />
+            </button>
+          </div>
+          {state?.projects.map((item) => {
+            const workflows = state.plans.filter((flow) => flow.projectId === item.id);
+            const running = workflows.filter((flow) => flow.status === 'running').length;
+            return (
+              <button
+                key={item.id}
+                title={item.repositoryPath}
+                aria-pressed={project?.id === item.id}
+                className={`project-item ${project?.id === item.id ? 'selected' : ''}`}
+                onClick={() => selectProject(item)}
+              >
+                <FolderGit2 size={16} />
+                <span>
+                  <strong>{item.name}</strong>
+                  <small>
+                    {running ? `${running} running · ` : ''}
+                    {workflows.length} workflows
+                  </small>
+                </span>
+                {running > 0 && <span className="local-dot" />}
+              </button>
+            );
+          })}
+          {!state?.projects.length && (
+            <button className="project-item" onClick={() => setShowAddProject(true)}>
+              <Plus size={16} />
+              Add your first project
+            </button>
+          )}
+        </div>
+        <button
+          className="global-defaults"
+          onClick={() => {
+            setSelectedProjectId('global');
+            setDraft(state ? structuredClone(state.config) : null);
+            setView('settings');
+          }}
+        >
+          <Settings2 size={13} />
+          Global defaults
+        </button>
         <div className="nav-label">WORKSPACE</div>
         <nav>
           <button
@@ -286,7 +393,7 @@ export default function Home() {
             onClick={() => setView('workflows')}
           >
             <Workflow size={18} />
-            Workflows<span className="nav-count">{state?.plans.length || 0}</span>
+            Workflows<span className="nav-count">{plans.length}</span>
           </button>
           <button
             className={`nav-item ${view === 'agents' ? 'active' : ''}`}
@@ -338,7 +445,7 @@ export default function Home() {
       <div className="workspace-main">
         <header className="topbar">
           <div className="breadcrumbs">
-            <span>Workspace</span>
+            <span>{project?.name || 'Workspace'}</span>
             <ChevronRight size={13} />
             <strong>{view === 'workflows' ? 'Workflows' : statusLabel(view)}</strong>
           </div>
@@ -389,13 +496,17 @@ export default function Home() {
                         AGENT WORKSPACE
                       </div>
                       <h1>Good code is a team effort.</h1>
-                      <p>Turn Markdown tasks into tested, independently reviewed changes.</p>
+                      <p>
+                        {project
+                          ? project.repositoryPath
+                          : 'Add a project folder to start creating workflows.'}
+                      </p>
                     </div>
                     <div className="heading-actions">
                       <button
                         className="button secondary"
                         onClick={startDemo}
-                        disabled={Boolean(busy) || Boolean(state.activePlanId)}
+                        disabled={Boolean(busy)}
                       >
                         {busy === 'demo' ? (
                           <LoaderCircle size={15} className="spin" />
@@ -404,9 +515,12 @@ export default function Home() {
                         )}
                         Try a demo
                       </button>
-                      <button className="button primary" onClick={() => setShowNewRun(true)}>
+                      <button
+                        className="button primary"
+                        onClick={() => (project ? setShowNewRun(true) : setShowAddProject(true))}
+                      >
                         <Plus size={17} />
-                        New run
+                        {project ? 'New workflow' : 'Add project'}
                       </button>
                     </div>
                   </section>
@@ -415,8 +529,8 @@ export default function Home() {
                     <Metric
                       icon={<Layers3 size={17} />}
                       label="Total runs"
-                      value={String(state.plans.length)}
-                      detail={`${state.plans.filter((item) => item.status === 'running').length} active right now`}
+                      value={String(plans.length)}
+                      detail={`${plans.filter((item) => item.status === 'running').length} active right now`}
                     />
                     <Metric
                       icon={<CheckCheck size={17} />}
@@ -439,7 +553,7 @@ export default function Home() {
                       icon={<GitPullRequest size={17} />}
                       label="Review rounds"
                       value={String(
-                        state.plans.reduce(
+                        plans.reduce(
                           (sum, item) =>
                             sum +
                             item.tasks.reduce((count, task) => count + task.reviews.length, 0) +
@@ -455,7 +569,7 @@ export default function Home() {
                     <div className="section-title">
                       <div>
                         <h2>
-                          Workflow runs <span className="count-tag">{state.plans.length}</span>
+                          Workflow runs <span className="count-tag">{plans.length}</span>
                         </h2>
                         <p>A clear view of what’s happening, and what happens next.</p>
                       </div>
@@ -471,52 +585,66 @@ export default function Home() {
                     {!plan ? (
                       <EmptyWorkspace
                         onDemo={startDemo}
-                        onCreate={() => setShowNewRun(true)}
+                        onCreate={() => (project ? setShowNewRun(true) : setShowAddProject(true))}
                         busy={Boolean(busy)}
                       />
                     ) : (
                       <div className="run-layout">
                         <div className="runs-list">
-                          {state.plans.map((item) => (
-                            <button
-                              className={`run-card ${item.id === plan.id ? 'selected' : ''}`}
-                              key={item.id}
-                              onClick={() => setSelectedId(item.id)}
-                            >
-                              <div className="run-card-top">
-                                <span className="run-mini-icon">
-                                  <Workflow size={15} />
-                                </span>
-                                <Status status={item.status} small />
-                              </div>
-                              <strong>{item.name}</strong>
-                              <div className="run-card-meta">
-                                {item.config.runtime === 'demo' ? (
-                                  <FlaskConical size={12} />
-                                ) : (
-                                  <FolderGit2 size={12} />
-                                )}
-                                <span>
-                                  {item.config.runtime === 'demo'
-                                    ? 'Isolated demo'
-                                    : item.config.repositoryPath.split('/').filter(Boolean).at(-1)}
-                                </span>
-                              </div>
-                              <div className="run-card-bottom">
-                                <span>
-                                  {planProgress(item).approved}/{item.tasks.length} tasks
-                                </span>
-                                <span>
-                                  {new Date(item.createdAt).toLocaleDateString(undefined, {
-                                    month: 'short',
-                                    day: 'numeric',
-                                  })}
-                                </span>
-                              </div>
-                              <div className="mini-progress">
-                                <span style={{ width: `${planProgress(item).percent}%` }} />
-                              </div>
-                            </button>
+                          {plans.map((item) => (
+                            <div className="run-card-wrapper" key={item.id}>
+                              <button
+                                className={`run-card ${item.id === plan.id ? 'selected' : ''}`}
+                                key={item.id}
+                                onClick={() => setSelectedId(item.id)}
+                              >
+                                <div className="run-card-top">
+                                  <span className="run-mini-icon">
+                                    <Workflow size={15} />
+                                  </span>
+                                  <Status status={item.status} small />
+                                </div>
+                                <strong>{item.name}</strong>
+                                <div className="run-card-meta">
+                                  {item.config.runtime === 'demo' ? (
+                                    <FlaskConical size={12} />
+                                  ) : (
+                                    <FolderGit2 size={12} />
+                                  )}
+                                  <span>
+                                    {item.config.runtime === 'demo'
+                                      ? 'Isolated demo'
+                                      : item.config.repositoryPath
+                                          .split('/')
+                                          .filter(Boolean)
+                                          .at(-1)}
+                                  </span>
+                                </div>
+                                <div className="run-card-bottom">
+                                  <span>
+                                    {planProgress(item).approved}/{item.tasks.length} tasks
+                                  </span>
+                                  <span>
+                                    {new Date(item.createdAt).toLocaleDateString(undefined, {
+                                      month: 'short',
+                                      day: 'numeric',
+                                    })}
+                                  </span>
+                                </div>
+                                <div className="mini-progress">
+                                  <span style={{ width: `${planProgress(item).percent}%` }} />
+                                </div>
+                              </button>
+                              <button
+                                className="icon-button run-remove danger-text"
+                                aria-label={`Remove ${item.name}`}
+                                title="Remove workflow"
+                                disabled={Boolean(busy)}
+                                onClick={() => setRemoveId(item.id)}
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
                           ))}
                         </div>
 
@@ -564,7 +692,7 @@ export default function Home() {
                                 <>
                                   <button
                                     className="button primary small"
-                                    disabled={Boolean(busy) || Boolean(state.activePlanId)}
+                                    disabled={Boolean(busy) || projectActive}
                                     onClick={() => control('start')}
                                   >
                                     <Play size={14} />
@@ -589,7 +717,31 @@ export default function Home() {
                                   </button>
                                 </>
                               ) : null}
+                              <button
+                                className="icon-button danger-text"
+                                title="Remove workflow"
+                                aria-label="Remove workflow"
+                                disabled={Boolean(busy)}
+                                onClick={() => setRemoveId(plan.id)}
+                              >
+                                <Trash2 size={16} />
+                              </button>
                             </div>
+                          </div>
+                          <div className="project-paths">
+                            <span>
+                              Project: <code>{plan.config.repositoryPath}</code>
+                            </span>
+                            {plan.workspacePath && (
+                              <span>
+                                Execution workspace: <code>{plan.workspacePath}</code>
+                              </span>
+                            )}
+                            {plan.artifactsPath && (
+                              <span>
+                                Documents: <code>{plan.artifactsPath}</code>
+                              </span>
+                            )}
                           </div>
                           {plan.error && (
                             <div
@@ -1064,17 +1216,25 @@ export default function Home() {
                   draft={draft}
                   onChange={setDraft}
                   view={view}
-                  state={state}
+                  state={{ ...state, runtime }}
+                  project={project}
                   busy={busy}
                   onRefreshModels={refreshModels}
                   onSave={() =>
                     void act(
                       'save',
                       async () => {
-                        const result = await api<FlowConfig>('/config', {
-                          method: 'PUT',
-                          body: JSON.stringify(draft),
-                        });
+                        const result = project
+                          ? (
+                              await api<ProjectRecord>(`/projects/${project.id}`, {
+                                method: 'PUT',
+                                body: JSON.stringify({ config: draft }),
+                              })
+                            ).config
+                          : await api<FlowConfig>('/config', {
+                              method: 'PUT',
+                              body: JSON.stringify(draft),
+                            });
                         setDraft(structuredClone(result));
                       },
                       'Settings saved for new runs.',
@@ -1087,7 +1247,7 @@ export default function Home() {
                 <Guide
                   onSettings={() => setView('settings')}
                   onDemo={startDemo}
-                  busy={Boolean(busy) || Boolean(state.activePlanId)}
+                  busy={Boolean(busy)}
                 />
               )}
             </>
@@ -1115,10 +1275,62 @@ export default function Home() {
           </button>
         </div>
       )}
-      {showNewRun && state && (
+      {showAddProject && (
+        <AddProjectModal
+          busy={busy === 'project'}
+          onClose={() => setShowAddProject(false)}
+          onAdd={async (input) => {
+            await act(
+              'project',
+              async () => {
+                const added = await api<ProjectRecord>('/projects', {
+                  method: 'POST',
+                  body: JSON.stringify(input),
+                });
+                selectProject(added);
+                setShowAddProject(false);
+              },
+              'Project ready. Configure its checks and task path in Settings.',
+            );
+          }}
+        />
+      )}
+      {removeId && (
+        <Modal
+          title="Remove workflow"
+          description="Remove this workflow from the dashboard. Project documents, code, and Git commits stay on disk. An active workflow will be stopped first."
+          onClose={() => setRemoveId(null)}
+        >
+          <div className="modal-actions">
+            <button className="button secondary" onClick={() => setRemoveId(null)}>
+              Keep workflow
+            </button>
+            <button
+              className="button primary"
+              disabled={Boolean(busy)}
+              onClick={() =>
+                void act(
+                  'remove',
+                  async () => {
+                    await api(`/plans/${removeId}`, { method: 'DELETE' });
+                    setSelectedId(null);
+                    setRemoveId(null);
+                  },
+                  'Workflow removed. Project files and commits retained.',
+                )
+              }
+            >
+              <Trash2 size={15} />
+              Remove workflow
+            </button>
+          </div>
+        </Modal>
+      )}
+      {showNewRun && state && project && (
         <NewRunModal
-          config={state.config}
-          active={Boolean(state.activePlanId)}
+          config={project.config}
+          active={projectActive}
+          project={project}
           onClose={() => setShowNewRun(false)}
           onCreate={async (input) => {
             let created: PlanRecord | null = null;
@@ -1127,7 +1339,7 @@ export default function Home() {
                 method: 'POST',
                 body: JSON.stringify({
                   name: input.name,
-                  repositoryPath: input.repositoryPath,
+                  projectId: project.id,
                   taskPath: input.taskPath,
                   ...(input.taskIds ? { taskIds: input.taskIds } : {}),
                 }),
@@ -1412,6 +1624,7 @@ function DiffPanel({ plan, taskId }: { plan: PlanRecord; taskId: string | null }
 }
 
 function SettingsView({
+  project,
   draft,
   onChange,
   view,
@@ -1421,6 +1634,7 @@ function SettingsView({
   onSave,
   dirty,
 }: {
+  project?: ProjectRecord;
   draft: FlowConfig;
   onChange: (config: FlowConfig) => void;
   view: 'agents' | 'settings';
@@ -1456,7 +1670,10 @@ function SettingsView({
           <h1>
             {view === 'agents' ? 'Meet your coding team.' : 'A solid foundation for every run.'}
           </h1>
-          <p>Defaults apply to new runs. Existing runs retain their captured settings.</p>
+          <p>
+            {project ? `Settings for ${project.name}.` : 'Global defaults for new projects.'}{' '}
+            Existing workflows retain their captured settings.
+          </p>
         </div>
         <button className="button secondary" onClick={onRefreshModels} disabled={Boolean(busy)}>
           {busy === 'models' ? (
@@ -1467,11 +1684,17 @@ function SettingsView({
           Refresh Codex catalog
         </button>
       </section>
-      <div className={`runtime-banner ${state.runtime?.authenticated ? 'ready' : ''}`}>
+      <div
+        className={`runtime-banner ${state.runtime?.authenticated && !state.runtime.projectConfigError ? 'ready' : ''}`}
+      >
         <Terminal size={19} />
         <div>
           <strong>
-            {state.runtime?.authenticated ? 'Codex connected' : 'Connect your local Codex runtime'}
+            {state.runtime?.projectConfigError
+              ? 'Project rules need attention'
+              : state.runtime?.authenticated
+                ? 'Codex connected'
+                : 'Connect your local Codex runtime'}
           </strong>
           <p>
             {state.runtime?.message ||
@@ -1492,9 +1715,7 @@ function SettingsView({
         {(['implementer', 'reviewer'] as const).map((role) => {
           const agent = draft.agents[role];
           const model = state.runtime?.models.find((item) => item.id === agent.model);
-          const efforts = model?.efforts.length
-            ? model.efforts
-            : ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+          const efforts = model?.efforts.length ? model.efforts : [];
           return (
             <section className="settings-card" key={role}>
               <div className="settings-card-title">
@@ -1512,36 +1733,38 @@ function SettingsView({
               </div>
               <label className="form-field">
                 <span>Model</span>
-                {state.runtime?.models.length ? (
-                  <select
-                    value={agent.model}
-                    onChange={(event) => updateAgent(role, 'model', event.target.value)}
-                  >
-                    {!model && (
-                      <option value={agent.model}>{agent.model} (not in current catalog)</option>
-                    )}
-                    {state.runtime.models.map((item) => (
-                      <option value={item.id} key={item.id}>
-                        {item.name}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    value={agent.model}
-                    onChange={(event) => updateAgent(role, 'model', event.target.value)}
-                    placeholder="gpt-6.1-sol"
-                  />
-                )}
+                <select
+                  value={agent.model}
+                  disabled={!state.runtime?.models.length}
+                  onChange={(event) => updateAgent(role, 'model', event.target.value)}
+                >
+                  {!model && (
+                    <option value={agent.model} disabled>
+                      {!state.runtime
+                        ? 'Loading Codex models…'
+                        : state.runtime.models.length
+                          ? `${agent.model} (unavailable — select a model)`
+                          : 'Models unavailable — refresh catalog'}
+                    </option>
+                  )}
+                  {state.runtime?.models.map((item) => (
+                    <option value={item.id} key={item.id}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label className="form-field">
                 <span>Reasoning effort</span>
                 <select
                   value={agent.effort}
+                  disabled={!efforts.length}
                   onChange={(event) => updateAgent(role, 'effort', event.target.value)}
                 >
                   {!efforts.includes(agent.effort) && (
-                    <option value={agent.effort}>{agent.effort} (unsupported)</option>
+                    <option value={agent.effort} disabled>
+                      {agent.effort} (unavailable)
+                    </option>
                   )}
                   {efforts.map((effort) => (
                     <option value={effort} key={effort}>
@@ -1586,9 +1809,14 @@ function SettingsView({
                 <span>Repository path</span>
                 <input
                   value={draft.repositoryPath}
+                  readOnly={Boolean(project)}
                   onChange={(event) => update('repositoryPath', event.target.value)}
-                  placeholder="/Users/you/projects/my-app"
                 />
+                <small>
+                  {project
+                    ? 'This is the selected project folder. Add another project to work in a different repository.'
+                    : 'Add a project from the sidebar to select its repository folder.'}
+                </small>
               </label>
               <label className="form-field">
                 <span>Task file or directory</span>
@@ -1726,7 +1954,8 @@ function SettingsView({
             <div className="storage-note">
               <Boxes size={15} />
               <span>
-                Local data directory: <code>{state.dataDirectory}</code>
+                {project ? 'Project documents:' : 'Controller data:'}{' '}
+                <code>{project ? `${project.repositoryPath}/.ai-flow` : state.dataDirectory}</code>
               </span>
             </div>
           </section>
@@ -1799,12 +2028,16 @@ function Modal({
   onClose: () => void;
 }) {
   const dialog = useRef<HTMLDivElement>(null);
+  const close = useRef(onClose);
+  useEffect(() => {
+    close.current = onClose;
+  }, [onClose]);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     const first = dialog.current?.querySelector<HTMLElement>('input, button');
     first?.focus();
     const keydown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape') close.current();
       if (event.key === 'Tab') {
         const elements = dialog.current?.querySelectorAll<HTMLElement>(
           'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href]',
@@ -1826,7 +2059,7 @@ function Modal({
       document.removeEventListener('keydown', keydown);
       previous?.focus();
     };
-  }, [onClose]);
+  }, []);
   return (
     <div
       className="modal-backdrop"
@@ -1859,13 +2092,67 @@ function Modal({
   );
 }
 
+function AddProjectModal({
+  busy,
+  onClose,
+  onAdd,
+}: {
+  busy: boolean;
+  onClose: () => void;
+  onAdd: (input: { repositoryPath: string; name?: string }) => Promise<void>;
+}) {
+  const [repositoryPath, setRepositoryPath] = useState('');
+  const [name, setName] = useState('');
+  return (
+    <Modal
+      title="Add a project"
+      description="Choose the Git repository folder where your workflows will work."
+      onClose={onClose}
+    >
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void onAdd({ repositoryPath, ...(name.trim() ? { name: name.trim() } : {}) });
+        }}
+      >
+        <div className="modal-body">
+          <label className="form-field">
+            <span>Project name (optional)</span>
+            <input
+              value={name}
+              maxLength={200}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="Defaults to the folder name"
+            />
+          </label>
+          <FolderPicker value={repositoryPath} onChange={setRepositoryPath} />
+          <small>
+            Use a Git repository with at least one commit. Each project keeps its own workflows,
+            settings, and documents.
+          </small>
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="button secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="button primary" disabled={busy || !repositoryPath.trim()}>
+            {busy ? <LoaderCircle size={15} className="spin" /> : <Plus size={15} />}Add project
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 function NewRunModal({
+  project,
   config,
   active,
   onClose,
   onCreate,
   busy,
 }: {
+  project: ProjectRecord;
   config: FlowConfig;
   active: boolean;
   onClose: () => void;
@@ -1879,7 +2166,7 @@ function NewRunModal({
   busy: boolean;
 }) {
   const [name, setName] = useState('');
-  const [repositoryPath, setRepositoryPath] = useState(config.repositoryPath);
+  const repositoryPath = project.repositoryPath;
   const [taskPath, setTaskPath] = useState(config.taskPath);
   const [start, setStart] = useState(!active);
   const [tasks, setTasks] = useState<TaskDefinition[] | null>(null);
@@ -1889,7 +2176,7 @@ function NewRunModal({
   return (
     <Modal
       title="Start a new workflow"
-      description="Choose a repository and give your agents a clear task or connected plan."
+      description={`Create a workflow in ${project.name} from a Markdown task or connected plan.`}
       onClose={onClose}
     >
       <form
@@ -1915,12 +2202,10 @@ function NewRunModal({
           </label>
           <label className="form-field">
             <span>Repository path</span>
-            <input
-              required
-              value={repositoryPath}
-              onChange={(event) => setRepositoryPath(event.target.value)}
-            />
-            <small>A clean Git repository with at least one commit.</small>
+            <input required value={repositoryPath} readOnly />
+            <small>
+              The repository belongs to the selected project. Its working tree must be clean.
+            </small>
           </label>
           <label className="form-field">
             <span>Markdown task file or directory</span>
@@ -2004,7 +2289,7 @@ function NewRunModal({
               Start immediately
               <small>
                 {active
-                  ? 'Another run is active. This run will be created in the queue.'
+                  ? 'Another workflow is active in this project. This workflow will be created in the queue.'
                   : 'Otherwise, create it in the queue and start when ready.'}
               </small>
             </div>

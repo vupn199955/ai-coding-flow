@@ -4,13 +4,25 @@ Verified locally on **2026-10-25** with Node.js 22.13.0.
 
 ## Automated checks
 
-- **33 tests passed** across seven files.
+- **42 tests passed** across eight files.
 - TypeScript checks passed for the server, dashboard, and shared contracts.
 - The production build passed.
 - Formatting checks passed.
 - Dependency audit: zero reported vulnerabilities.
 
 Tests exercise the Codex JSON-RPC handshake with a fake executable, model/effort validation, review schema invariants, Markdown dependency graphs, configuration capture, SQLite recovery, actual process exits/timeouts/cancellation, clean-commit checks, blocking review repairs, failed-check repairs, final-plan repairs, pause/resume after integration, token limits, API validation/origin restrictions, and live-stream shutdown.
+
+## Project workflow update
+
+- Registered an external repository through the dashboard folder browser and confirmed its canonical path becomes the project repository path.
+- Confirmed model dropdowns use the installed Codex catalog, including supported reasoning efforts; no model turns were started during this check.
+- Created a queued workflow through the UI with a separately entered task-directory path. Confirmed its Markdown documents appear under the selected project's `.ai-flow/runs/<id>`.
+- Started a deterministic demo as a second project, switched back to the first project, and confirmed each project shows only its own workflows. The demo completed with real checks and automatic commits.
+- Automated tests run two projects concurrently, pause/resume one independently, reject simultaneous starts within the same project, preserve ignored root/scoped instructions and local skills in worktrees, and verify descriptive commits and exact review hashes.
+- Automated API/store tests cover project settings capture, canonical path deduplication, directory browsing, legacy workflow association, and workflow removal across restart while preserving project artifacts.
+- Read effective configuration layers from the installed native Codex app-server in an isolated worktree. It reported an untrusted project layer as disabled. A runtime regression test verifies AI Flow reports that trust issue and stops before `thread/start`.
+
+These update checks used temporary repositories and a separate controller database. They made no paid model calls and did not modify the user's global Codex trust settings. The real Codex execution and container checks below are earlier baseline evidence; they were not repeated for this update.
 
 ## Real Codex execution
 

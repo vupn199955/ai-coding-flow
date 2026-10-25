@@ -35,6 +35,21 @@ export interface FlowConfig {
   networkAccess: boolean;
 }
 
+export interface ProjectRecord {
+  id: string;
+  name: string;
+  repositoryPath: string;
+  config: FlowConfig;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DirectoryListing {
+  path: string;
+  parent: string | null;
+  directories: { name: string; path: string }[];
+}
+
 export interface TaskDefinition {
   id: string;
   title: string;
@@ -125,6 +140,11 @@ export interface TaskRecord extends TaskDefinition {
 
 export interface PlanRecord {
   id: string;
+  /** Populated for legacy runs during startup migration. */
+  projectId?: string;
+  /** New runs use project-local storage; absent on legacy workspaces. */
+  storageDirectory?: string;
+  artifactsPath?: string;
   name: string;
   status: PlanStatus;
   config: FlowConfig;
@@ -167,19 +187,24 @@ export interface RuntimeStatus {
   models: ModelInfo[];
   message: string;
   checkedAt: string;
+  projectConfigError?: string;
 }
 
 export interface DashboardState {
   config: FlowConfig;
+  projects: ProjectRecord[];
   plans: PlanRecord[];
+  activePlanIds: string[];
   activePlanId: string | null;
   events: FlowEvent[];
   runtime: RuntimeStatus | null;
+  projectRuntimes: Record<string, RuntimeStatus>;
   dataDirectory: string;
 }
 
 export interface CreatePlanInput {
   name: string;
+  projectId?: string;
   repositoryPath?: string;
   taskPath?: string;
   taskIds?: string[];

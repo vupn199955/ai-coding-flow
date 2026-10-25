@@ -22,7 +22,7 @@ flowchart TD
 
 ## Data contracts
 
-Shared contracts live in `packages/shared/src/index.ts`. A plan captures repository/task paths, the source base commit, the full task Markdown, agent settings, checks, budgets, execution history, task reviews, and final verification. SQLite stores complete plan snapshots and an append-only activity stream. Review and check artifacts live in the controller data directory outside the role’s worktree.
+Shared contracts live in `packages/shared/src/index.ts`. A plan captures repository/task paths, the source base commit, the full task Markdown, agent settings, checks, budgets, execution history, task reviews, and final verification. SQLite stores complete plan snapshots and an append-only activity stream. Projects own a canonical repository path and editable defaults; every new plan has a project ID and captures those defaults. Generated Markdown, reviews, and check artifacts live in `<repository>/.ai-flow/runs/<run-id>` outside the role’s worktree. Worktrees live in `<repository>/.ai-flow/worktrees/<run-id>`. The controller directory holds the global SQLite registry. Legacy plans retain their captured workspace/report paths and are associated with projects during startup migration.
 
 A task has a stable ID, title, Markdown, dependencies, phase, current round, repair count, base/candidate/approved/integrated commits, latest check results, and all review rounds. One task is simply a one-node plan.
 
@@ -55,7 +55,7 @@ The demo adapter is a separate deterministic implementation restricted to reposi
 
 ## Durability and cancellation
 
-The controller writes a checkpoint at each stage and before/after agent attempts. A one-second heartbeat persists active elapsed time. One controller process owns a data-directory lock, and only one plan runs at a time. SQLite uses WAL.
+The controller writes a checkpoint at each stage and before/after agent attempts. A one-second heartbeat persists active elapsed time. One controller process owns a data-directory lock, and one plan per project runs at a time. A map of active runs permits different projects to execute concurrently, with independent abort controllers and budgets. SQLite uses WAL.
 
 Pause/cancel signal the running agent or command process. On graceful shutdown the active run pauses. Startup converts previously running plans to paused and unfinished attempts to interrupted. Resume reruns incomplete work rather than claiming an interrupted operation succeeded. A newly created but unrecorded worktree can be recovered by its managed path and branch.
 
@@ -69,25 +69,29 @@ Review rounds, failed-check repair attempts, active elapsed time, and reported t
 
 ## API
 
-| Endpoint                               | Purpose                                               |
-| -------------------------------------- | ----------------------------------------------------- |
-| `GET /api/health`                      | Controller health                                     |
-| `GET /api/state`                       | Dashboard state and recent events                     |
-| `GET/PUT /api/config`                  | Default configuration                                 |
-| `POST /api/runtime/refresh`            | Codex authentication/catalog status                   |
-| `GET /api/tasks?path=…`                | Parse and preview Markdown tasks                      |
-| `POST /api/plans`                      | Create a captured task/plan run                       |
-| `GET /api/plans/:id`                   | Full persisted run                                    |
-| `POST /api/plans/:id/start`            | Start or resume                                       |
-| `POST /api/plans/:id/pause`            | Interrupt and pause                                   |
-| `POST /api/plans/:id/cancel`           | Cancel, preserving artifacts                          |
-| `PATCH /api/plans/:id/limits`          | Explicit budget adjustment                            |
-| `GET /api/plans/:id/diff?taskId=…`     | Recorded candidate diff                               |
-| `GET /api/plans/:id/reviews/:reviewId` | Download Markdown review                              |
-| `GET /api/events?planId=…&after=…`     | Persisted activity                                    |
-| `GET /api/stream`                      | Live event notifications via SSE                      |
-| `POST /api/demo`                       | Create an isolated demo; optional `{ "start": true }` |
+| Endpoint                                | Purpose                                                          |
+| --------------------------------------- | ---------------------------------------------------------------- |
+| `GET/POST /api/projects`                | List or register canonical project repository paths              |
+| `PUT /api/projects/:id`                 | Update project name/settings; repository path stays fixed        |
+| `GET /api/directories?path=…`           | Browse controller folders for project selection                  |
+| `DELETE /api/plans/:id`                 | Stop and remove a workflow; retain project artifacts and commits |
+| `GET /api/health`                       | Controller health                                                |
+| `GET /api/state`                        | Dashboard state and recent events                                |
+| `GET/PUT /api/config`                   | Default configuration                                            |
+| `POST /api/runtime/refresh?projectId=…` | Codex authentication/catalog status                              |
+| `GET /api/tasks?path=…`                 | Parse and preview Markdown tasks                                 |
+| `POST /api/plans`                       | Create a captured task/plan run                                  |
+| `GET /api/plans/:id`                    | Full persisted run                                               |
+| `POST /api/plans/:id/start`             | Start or resume                                                  |
+| `POST /api/plans/:id/pause`             | Interrupt and pause                                              |
+| `POST /api/plans/:id/cancel`            | Cancel, preserving artifacts                                     |
+| `PATCH /api/plans/:id/limits`           | Explicit budget adjustment                                       |
+| `GET /api/plans/:id/diff?taskId=…`      | Recorded candidate diff                                          |
+| `GET /api/plans/:id/reviews/:reviewId`  | Download Markdown review                                         |
+| `GET /api/events?planId=…&after=…`      | Persisted activity                                               |
+| `GET /api/stream`                       | Live event notifications via SSE                                 |
+| `POST /api/demo`                        | Create an isolated demo; optional `{ "start": true }`            |
 
 ## Boundaries
 
-This version is local and single-user, with sequential plan execution. It does not provide remote multi-tenant authentication, parallel scheduling, automated source-branch merging, production deployment, model billing reconciliation, or exactly-once external side effects. Worktrees and artifacts are deliberately retained for inspection; automatic pruning is not enabled.
+This version is local and single-user, with sequential plan execution. It does not provide remote multi-tenant authentication, parallel scheduling, automated source-branch merging, production deployment, model billing reconciliation, or exactly-once external side effects. Worktrees and artifacts are deliberately retained for inspection; automatic pruning is not enabled. Workflow removal first aborts and awaits active execution, then transactionally removes the plan and its events. It preserves project files and Git history.

@@ -129,6 +129,129 @@ button {
   display: flex;
   flex-direction: column;
   z-index: 30;
+  overflow-y: auto;
+}
+.project-list {
+  margin-bottom: 16px;
+}
+.project-list-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+  font-size: 10px;
+  letter-spacing: 1.2px;
+}
+.project-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  text-align: left;
+  padding: 10px;
+  border-radius: 8px;
+}
+.project-item.selected,
+.project-item:hover {
+  color: #fff;
+  background: #2d323d;
+}
+.project-item > span:not(.local-dot) {
+  min-width: 0;
+  flex: 1;
+}
+.project-item strong,
+.project-item small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-item small {
+  color: #a2a7b3;
+  font-size: 11px;
+  margin-top: 3px;
+}
+.project-list > .project-item {
+  margin-top: 4px;
+}
+.global-defaults {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  margin-bottom: 12px;
+  font-size: 11px;
+}
+.workspace-label > div {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folder-input,
+.folder-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.folder-input input,
+.folder-toolbar input {
+  flex: 1;
+  min-width: 0;
+}
+.folder-input button {
+  white-space: nowrap;
+}
+.folder-browser {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+}
+.folder-entries {
+  max-height: 230px;
+  overflow-y: auto;
+}
+.folder-entries button {
+  width: 100%;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  text-align: left;
+  padding: 8px;
+  border-radius: 5px;
+  overflow-wrap: anywhere;
+}
+.folder-entries button:hover {
+  background: var(--orange-pale);
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 20px 27px;
+  border-top: 1px solid var(--line);
+}
+.project-paths {
+  display: grid;
+  gap: 5px;
+  padding: 12px 24px;
+  font-size: 11px;
+  color: #667080;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.run-card-wrapper {
+  position: relative;
+}
+.run-card-wrapper .run-card {
+  width: 100%;
+}
+.run-remove {
+  position: absolute;
+  right: 10px;
+  bottom: 32px;
 }
 .brand {
   display: flex;
@@ -2621,6 +2744,26 @@ h1 {
   }
 }
 @media (max-width: 760px) {
+  .project-list-heading > span,
+  .project-item > span,
+  .global-defaults {
+    display: none;
+  }
+  .project-list-heading,
+  .project-item {
+    padding: 8px 0;
+    justify-content: center;
+  }
+  .run-card-wrapper {
+    flex-shrink: 0;
+    width: 210px;
+  }
+  .folder-input {
+    flex-wrap: wrap;
+  }
+  .folder-input input {
+    flex-basis: 100%;
+  }
   .sidebar {
     width: 67px;
     padding: 24px 10px 0;

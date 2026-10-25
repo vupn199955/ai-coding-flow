@@ -5,6 +5,7 @@ import {
   Put,
   Post,
   Patch,
+  Delete,
   Param,
   Query,
   Body,
@@ -24,10 +25,12 @@ import { FlowController } from './orchestrator';
 import { Store } from './store';
 import { renderReview } from './review';
 import { runProcess } from './process';
+import { listDirectories } from './projects';
 
 const createPlanSchema = z
   .object({
     name: z.string().trim().min(1).max(200),
+    projectId: z.string().min(1).optional(),
     repositoryPath: z.string().min(1).optional(),
     taskPath: z.string().min(1).optional(),
     taskIds: z.array(z.string().min(1)).max(200).optional(),
@@ -67,8 +70,37 @@ class ApiController {
   @Put('config') updateConfig(@Body() body: unknown) {
     return this.flow.updateConfig(body);
   }
-  @Post('runtime/refresh') runtime() {
-    return this.flow.refreshRuntime();
+  @Post('runtime/refresh') runtime(@Query('projectId') projectId?: string) {
+    return this.flow.refreshRuntime(projectId);
+  }
+  @Get('directories') directories(@Query('path') directory?: string) {
+    return listDirectories(directory);
+  }
+  @Get('projects') projects() {
+    return this.flow.store.listProjects();
+  }
+  @Post('projects') createProject(@Body() body: unknown) {
+    return this.flow.createProject(
+      z
+        .object({
+          repositoryPath: z.string().min(1),
+          name: z.string().trim().min(1).max(200).optional(),
+        })
+        .strict()
+        .parse(body),
+    );
+  }
+  @Put('projects/:id') updateProject(@Param('id') id: string, @Body() body: unknown) {
+    return this.flow.updateProject(
+      id,
+      z
+        .object({
+          name: z.string().trim().min(1).max(200).optional(),
+          config: z.unknown().optional(),
+        })
+        .strict()
+        .parse(body),
+    );
   }
   @Get('tasks') tasks(@Query('path') taskPath?: string) {
     return this.flow.previewTasks(taskPath);
@@ -78,6 +110,9 @@ class ApiController {
   }
   @Post('plans') create(@Body() body: unknown) {
     return this.flow.createPlan(createPlanSchema.parse(body));
+  }
+  @Delete('plans/:id') remove(@Param('id') id: string) {
+    return this.flow.removePlan(id);
   }
   @Post('plans/:id/start') start(@Param('id') id: string) {
     return this.flow.start(id);
@@ -94,8 +129,6 @@ class ApiController {
 
   @Post('demo') async demo(@Body() body: unknown) {
     const input = z.object({ start: z.boolean().optional() }).parse(body || {});
-    if (input.start && this.flow.state().activePlanId)
-      throw new Error('Another run is active. Pause or finish it before starting a demo.');
     const plan = await this.flow.createDemo();
     return input.start ? this.flow.start(plan.id) : plan;
   }

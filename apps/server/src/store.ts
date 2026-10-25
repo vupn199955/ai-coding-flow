@@ -2,7 +2,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import type { FlowConfig, FlowEvent, PlanRecord } from '@ai-flow/shared';
+import type { FlowConfig, FlowEvent, PlanRecord, ProjectRecord } from '@ai-flow/shared';
+import { writePlanDocuments } from './documents';
 
 export type EventInput = Omit<FlowEvent, 'id' | 'createdAt'>;
 
@@ -18,6 +19,7 @@ export class Store {
       PRAGMA busy_timeout = 5000;
       CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK (id = 1), value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS plans (id TEXT PRIMARY KEY, value TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, repository_path TEXT NOT NULL UNIQUE, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         plan_id TEXT,
@@ -48,6 +50,40 @@ export class Store {
         'INSERT INTO plans (id, value, created_at) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET value = excluded.value',
       )
       .run(plan.id, JSON.stringify(plan), plan.createdAt);
+    writePlanDocuments(plan);
+  }
+
+  listProjects(): ProjectRecord[] {
+    return (
+      this.db.prepare('SELECT value FROM projects ORDER BY rowid').all() as { value: string }[]
+    ).map((row) => JSON.parse(row.value) as ProjectRecord);
+  }
+
+  getProject(id: string): ProjectRecord | null {
+    const row = this.db.prepare('SELECT value FROM projects WHERE id = ?').get(id) as
+      { value: string } | undefined;
+    return row ? (JSON.parse(row.value) as ProjectRecord) : null;
+  }
+
+  saveProject(project: ProjectRecord): void {
+    project.updatedAt = new Date().toISOString();
+    this.db
+      .prepare(
+        'INSERT INTO projects (id, repository_path, value) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET repository_path = excluded.repository_path, value = excluded.value',
+      )
+      .run(project.id, project.repositoryPath, JSON.stringify(project));
+  }
+
+  removePlan(id: string): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('DELETE FROM events WHERE plan_id = ?').run(id);
+      this.db.prepare('DELETE FROM plans WHERE id = ?').run(id);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   getPlan(id: string): PlanRecord | null {

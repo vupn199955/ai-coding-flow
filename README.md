@@ -27,10 +27,13 @@ The dashboard listens on port `3000`; the local controller listens on `4310`. Bo
 ## Run real coding agents
 
 1. Install [Codex CLI](https://learn.chatgpt.com/docs/cli) and run `codex login`. If the executable is not on PATH, set `CODEX_BIN` to its absolute path.
-2. Open **Agents → Refresh Codex catalog**. Select the model and reasoning effort for each role, then save. GPT-6.1 Sol and Ultra are selectable when advertised by your runtime. Unsupported combinations fail explicitly; they are never silently replaced. A catalog entry is not an entitlement guarantee—actual model access is confirmed by a successful invocation.
-3. Open **Settings**. Choose an absolute repository path and task path. The repository must have a clean working tree and at least one commit. The task path can be one `.md` file or a directory of `.md` files.
-4. Set the repository’s actual checks. At least one must be a unit-test check. Configure active runtime, reported token, check-repair, and review-round limits.
-5. Click **New run**. Preview or select tasks if desired; required dependencies are included automatically. Start the run and follow Activity, Reviews, Checks, Changes, and Usage.
+2. Click **Add project** in the Projects sidebar and use **Browse folder** to select your Git repository. The selected folder is the project’s repository path. Each project has its own workflows and settings.
+3. Open **Agents**. The model catalog loads automatically; use **Refresh Codex catalog** to retry. Select the model and reasoning effort for each role, then save. GPT-6.1 Sol and Ultra are selectable when advertised by your runtime. Unsupported combinations fail explicitly; they are never silently replaced. A catalog entry is not an entitlement guarantee—actual model access is confirmed by a successful invocation.
+4. Open the project’s **Settings** and enter its task path. The **Task file or directory** remains a text input. The repository must have a clean working tree and at least one commit. The task path can be one `.md` file or a directory of `.md` files.
+5. Set the repository’s actual checks. At least one must be a unit-test check. Configure active runtime, reported token, check-repair, and review-round limits.
+6. Click **New workflow**. Preview or select tasks if desired; required dependencies are included automatically. Start the run and follow Activity, Reviews, Checks, Changes, and Usage.
+
+Project settings apply to new workflows; existing workflows retain their captured settings. **Global defaults** in the sidebar supplies starting model, instruction, check, and limit settings for new projects. Task paths remain independent inputs and can point outside the repository.
 
 You can keep working in the source repository: execution takes place in managed Git worktrees. AI Flow does not switch your source branch, automatically merge into it, push code, or deploy the result.
 
@@ -85,21 +88,32 @@ Passing commands alone do not establish test quality. The reviewer is instructed
 
 Pause interrupts the active agent/check process and preserves work. Resume continues from stored workspaces and checkpoints; an unfinished invocation starts a new session with task requirements and available feedback. Restarting the controller turns previously active runs into paused runs. It does not silently restart model calls.
 
-When a limit or error stops progress, the run becomes **Needs attention**. Inspect the logs and checks, fix environmental issues if necessary, or use the run’s **Adjust limits** control before resuming. A cancelled run retains artifacts but cannot be resumed. Only one plan runs at a time in this version.
+When a limit or error stops progress, the run becomes **Needs attention**. Inspect the logs and checks, fix environmental issues if necessary, or use the run’s **Adjust limits** control before resuming. A cancelled run retains artifacts but cannot be resumed. Different projects can run concurrently. Each project allows one active workflow, with independent pause, resume, cancellation, and budgets. Tasks within each workflow still execute sequentially.
 
-Review reports and check results are written outside the agent workspace:
+Use **Remove workflow** on a workflow card or its detail header to remove it and its activity from the dashboard. Active work is stopped before removal. Project documents, worktrees, branches, and commits are retained on disk.
+
+New workflows keep generated documents, reviews, check results, and worktrees inside the selected project. The original task input is preserved; each workflow captures a project-local copy:
 
 ```text
-.ai-flow/
-  flow.sqlite
-  reports/<run-id>/<task-id>/
-    round-01-<unique-id>.md
-    round-01-<unique-id>.json
-    checks-round-1-attempt-0-<unique-id>.json
+<selected-project>/.ai-flow/
+  runs/<run-id>/
+    plan.md
+    progress.md
+    tasks/<task-id>/
+      task.md
+      progress.md
+      reports/                 # Markdown/JSON reviews and check results
+    final/reports/
   worktrees/<run-id>/
     integration/
     tasks/<task-id>/
 ```
+
+AI Flow excludes `.ai-flow/` through Git’s local `info/exclude`, keeping generated progress out of delivery commits without editing the project’s `.gitignore`. The global controller directory retains SQLite and demo fixtures. Existing workflows are grouped into projects by their repository paths and retain their original workspace/report locations for resumability.
+
+Codex runs from the project worktree and follows applicable `AGENTS.md`, `AGENTS.override.md`, scoped guidance, local skills, and supported project configuration/rules. Ignored local guidance is copied into managed worktrees without staging it. Symlinked guidance is not copied. Project `.codex/config.toml` and rules are subject to the installed Codex runtime’s trust settings. AI Flow checks native configuration layers before any model turn; disabled project rules stop the workflow with the runtime’s exact trust instructions. Configure trust in Codex, refresh the catalog, and resume. AI Flow does not modify your global Codex trust settings.
+
+The controller automatically commits task changes with concise titles before checks and independent review. It uses the implementer’s suggested title following project conventions, with a deterministic title based on the task when unavailable. Repairs receive separate commits; approvals remain bound to the exact tested commit.
 
 The plan’s final branch is `ai-flow/<run-id>`. Task branches use `ai-flow-tasks/<run-id>/<task-id>`. The dashboard provides the exact final commit, a combined diff, and downloadable review Markdown. Inspect and merge the output branch through your normal process.
 
@@ -115,7 +129,7 @@ Unknown usage is displayed as unknown. Demo agents make no model calls and do no
 | --------------- | -------------------- | ----------------------------------------------------------- |
 | `FLOW_WEB_PORT` | `3000`               | Dashboard port                                              |
 | `FLOW_API_PORT` | `4310`               | Controller port and Next.js proxy destination               |
-| `FLOW_DATA_DIR` | `<project>/.ai-flow` | SQLite, artifacts, demos, worktrees                         |
+| `FLOW_DATA_DIR` | `<AI Flow>/.ai-flow` | Global SQLite registry and demo fixtures                    |
 | `CODEX_BIN`     | `codex`              | Codex executable                                            |
 | `FLOW_WEB_HOST` | `127.0.0.1`          | Production web bind address; container setup uses `0.0.0.0` |
 
@@ -148,7 +162,7 @@ npm run verify:live
 docker compose up --build
 ```
 
-Open http://127.0.0.1:3000. Data and optional Codex authentication use named volumes. For real work, set `FLOW_REPOSITORIES_DIR` to a host directory containing your repositories; they appear under `/workspace/repos` in the container. Configure those **container paths** in Settings.
+Open http://127.0.0.1:3000. Data and optional Codex authentication use named volumes. For real work, set `FLOW_REPOSITORIES_DIR` to a host directory containing your repositories; they appear under `/workspace/repos` in the container. Select those **container paths** from **Add project**. The folder browser navigates the controller’s filesystem, so native execution uses your local folders and Docker uses mounted container folders.
 
 Authenticate inside the container when needed:
 

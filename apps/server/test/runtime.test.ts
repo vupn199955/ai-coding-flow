@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, writeFile, chmod, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, chmod, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { CodexRuntime, type AgentRequest } from '../src/runtime';
@@ -14,16 +14,19 @@ describe('Codex JSON-RPC integration without model calls', () => {
       binary,
       `#!/usr/bin/env node
 const readline = require('node:readline');
+const fs = require('node:fs');
 const input = readline.createInterface({ input: process.stdin });
 const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
 input.on('line', line => {
   const message = JSON.parse(line);
+  fs.appendFileSync('rpc-records.jsonl', JSON.stringify(message) + '\\n');
   if (!message.id) return;
   const reply = result => send({ id: message.id, result });
   switch(message.method) {
     case 'initialize': reply({}); break;
-    case 'model/list': reply({data:[{model:'test-model',displayName:'Test',defaultReasoningEffort:'high',supportedReasoningEfforts:[{reasoningEffort:'high'}]}]}); break;
+    case 'model/list': reply(message.params.cursor ? {data:[{model:'paged-model',displayName:'Paged',defaultReasoningEffort:'low',supportedReasoningEfforts:[{reasoningEffort:'low'}]}],nextCursor:null} : {data:[{model:'test-model',displayName:'Test',defaultReasoningEffort:'high',supportedReasoningEfforts:[{reasoningEffort:'high'}]}],nextCursor:'page-two'}); break;
     case 'account/read': reply({account:{type:'apiKey'}}); break;
+    case 'config/read': reply(fs.existsSync('blocked-config') ? {layers:[{name:{type:'project'},disabledReason:'The selected project must be trusted before its rules can load.'}]} : {layers:[]}); break;
     case 'thread/start': reply({thread:{id:'test-thread'}}); break;
     case 'turn/start': {
       reply({turn:{id:'test-turn'}});
@@ -67,6 +70,7 @@ input.on('line', line => {
     expect(status.available).toBe(true);
     expect(status.authenticated).toBe(true);
     expect(status.models[0]?.efforts).toEqual(['high']);
+    expect(status.models.map((model) => model.id)).toEqual(['test-model', 'paged-model']);
     const snapshots: number[] = [];
     const result = await runtime.run({
       ...request(directory),
@@ -76,6 +80,14 @@ input.on('line', line => {
     expect(result.threadId).toBe('test-thread');
     expect(result.usage?.totalTokens).toBe(150);
     expect(snapshots).toEqual([150, 150]);
+    const messages = (await readFile(path.join(directory, 'rpc-records.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    const thread = messages.find((message) => message.method === 'thread/start');
+    expect(thread.params.cwd).toBe(directory);
+    expect(thread.params.developerInstructions).toContain('AGENTS.override.md');
+    expect(thread.params.sandbox).toBe('read-only');
   });
 
   it('rejects unsupported models and efforts rather than substituting settings', async () => {
@@ -98,5 +110,19 @@ input.on('line', line => {
     await expect(
       new CodexRuntime(binary, directory).run({ ...request(directory), signal: abort.signal }),
     ).rejects.toThrow(/interrupted/);
+  });
+
+  it('stops before a model turn when native Codex disables project configuration or rules', async () => {
+    await writeFile(path.join(directory, 'blocked-config'), 'untrusted');
+    const runtime = new CodexRuntime(binary, directory);
+    expect((await runtime.inspect()).projectConfigError).toContain('must be trusted');
+    await expect(runtime.run(request(directory, 'implementer'))).rejects.toThrow(
+      /configuration\/rules are disabled/,
+    );
+    const messages = (await readFile(path.join(directory, 'rpc-records.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(messages.some((message) => message.method === 'thread/start')).toBe(false);
   });
 });

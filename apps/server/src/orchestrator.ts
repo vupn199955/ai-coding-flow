@@ -8,6 +8,7 @@ import type {
   DashboardState,
   FlowConfig,
   PlanRecord,
+  ProjectRecord,
   ReviewRecord,
   ReviewVerdict,
   RuntimeStatus,
@@ -28,6 +29,8 @@ import {
   validateRepository,
 } from './workspace';
 import { parseReview, renderReview } from './review';
+import { canonicalPath, excludeRuntimeFiles, projectRecord, repositoryRoot } from './projects';
+import { commitTitle } from './workspace';
 
 interface ActiveRun {
   plan: PlanRecord;
@@ -38,9 +41,11 @@ interface ActiveRun {
 }
 
 export class FlowController {
-  private active: ActiveRun | null = null;
+  private readonly active = new Map<string, ActiveRun>();
+  private readonly removing = new Set<string>();
+  private readonly runtimeStatuses = new Map<string, RuntimeStatus>();
+  private readonly runtimeRefreshes = new Map<string, Promise<RuntimeStatus>>();
   private runtimeStatus: RuntimeStatus | null = null;
-  private runtimeRefresh: Promise<RuntimeStatus> | null = null;
   private readonly runtimeFactory: (config: FlowConfig) => AgentRuntime;
 
   constructor(
@@ -53,16 +58,20 @@ export class FlowController {
       ((config) =>
         config.runtime === 'demo'
           ? new DemoRuntime()
-          : new CodexRuntime(process.env.CODEX_BIN || 'codex', root));
+          : new CodexRuntime(process.env.CODEX_BIN || 'codex', config.repositoryPath));
     if (!store.getConfig()) store.saveConfig(defaultConfig(root));
+    this.migrateProjects();
     store.recoverInterruptedRuns();
   }
 
   state(): DashboardState {
     return {
       config: this.config(),
+      projects: this.store.listProjects(),
       plans: this.store.listPlans(),
-      activePlanId: this.active?.plan.id ?? null,
+      activePlanIds: [...this.active.keys()],
+      activePlanId: this.active.keys().next().value ?? null,
+      projectRuntimes: Object.fromEntries(this.runtimeStatuses),
       events: this.store.getEvents(undefined, 0, 200),
       runtime: this.runtimeStatus,
       dataDirectory: this.store.directory,
@@ -86,18 +95,94 @@ export class FlowController {
     return config;
   }
 
-  async refreshRuntime(): Promise<RuntimeStatus> {
-    if (this.runtimeRefresh) return this.runtimeRefresh;
-    this.runtimeRefresh = new CodexRuntime(process.env.CODEX_BIN || 'codex', this.root)
+  private migrateProjects(): void {
+    const byPath = new Map(
+      this.store.listProjects().map((project) => [project.repositoryPath, project]),
+    );
+    for (const plan of this.store.listPlans()) {
+      if (plan.projectId && this.store.getProject(plan.projectId)) continue;
+      const repository = canonicalPath(plan.config.repositoryPath);
+      let project = byPath.get(repository);
+      if (!project) {
+        project = projectRecord(repository, plan.config);
+        this.store.saveProject(project);
+        byPath.set(repository, project);
+      }
+      plan.projectId = project.id;
+      // Retain captured configuration and legacy workspace/report paths for resume.
+      this.store.savePlan(plan);
+    }
+  }
+
+  requireProject(id: string): ProjectRecord {
+    const project = this.store.getProject(id);
+    if (!project) throw new Error('Project not found.');
+    return project;
+  }
+
+  async createProject(input: { repositoryPath: string; name?: string }): Promise<ProjectRecord> {
+    const repository = await repositoryRoot(input.repositoryPath);
+    const existing = this.store
+      .listProjects()
+      .find((project) => project.repositoryPath === repository);
+    if (existing) return existing;
+    await excludeRuntimeFiles(repository);
+    const project = projectRecord(
+      repository,
+      { ...this.config(), taskPath: path.join(repository, 'tasks') },
+      input.name,
+    );
+    // Recheck after asynchronous validation to handle two simultaneous requests.
+    const duplicate = this.store.listProjects().find((item) => item.repositoryPath === repository);
+    if (duplicate) return duplicate;
+    this.store.saveProject(project);
+    this.event(
+      null,
+      null,
+      'controller',
+      'state',
+      `Project added: ${project.name} (${repository}).`,
+    );
+    return project;
+  }
+
+  updateProject(id: string, input: { name?: string; config?: unknown }): ProjectRecord {
+    const project = this.requireProject(id);
+    if (input.name !== undefined) project.name = input.name.trim();
+    if (input.config !== undefined) {
+      const config = parseConfig(input.config);
+      if (config.repositoryPath !== project.repositoryPath)
+        throw new Error(
+          'Repository path is owned by the project. Add another project to select a different repository.',
+        );
+      project.config = config;
+    }
+    this.store.saveProject(project);
+    this.event(
+      null,
+      null,
+      'controller',
+      'state',
+      `Project settings updated: ${project.name}. Existing workflows retain their captured configuration.`,
+    );
+    return project;
+  }
+
+  async refreshRuntime(projectId?: string): Promise<RuntimeStatus> {
+    const key = projectId || 'global';
+    const pending = this.runtimeRefreshes.get(key);
+    if (pending) return pending;
+    const cwd = projectId ? this.requireProject(projectId).repositoryPath : this.root;
+    const refresh = new CodexRuntime(process.env.CODEX_BIN || 'codex', cwd)
       .inspect()
       .then((status) => {
+        this.runtimeStatuses.set(key, status);
         this.runtimeStatus = status;
         return status;
       })
-      .finally(() => {
-        this.runtimeRefresh = null;
-      });
-    return this.runtimeRefresh;
+      .finally(() => this.runtimeRefreshes.delete(key));
+    this.runtimeRefreshes.set(key, refresh);
+    return refresh;
   }
 
   async previewTasks(taskPath?: string) {
@@ -105,17 +190,37 @@ export class FlowController {
   }
 
   async createPlan(input: CreatePlanInput, override?: FlowConfig): Promise<PlanRecord> {
+    let project = input.projectId ? this.requireProject(input.projectId) : undefined;
+    if (
+      project &&
+      input.repositoryPath &&
+      canonicalPath(input.repositoryPath) !== project.repositoryPath
+    )
+      throw new Error('Repository path must match the selected project.');
     const config = parseConfig({
-      ...structuredClone(override || this.config()),
+      ...structuredClone(override || project?.config || this.config()),
       ...(input.repositoryPath ? { repositoryPath: input.repositoryPath } : {}),
       ...(input.taskPath ? { taskPath: input.taskPath } : {}),
     });
+    config.repositoryPath = await repositoryRoot(config.repositoryPath);
+    await excludeRuntimeFiles(config.repositoryPath);
     config.repositoryPath = await validateRepository(config.repositoryPath);
+    if (!project) {
+      project = this.store
+        .listProjects()
+        .find((item) => item.repositoryPath === config.repositoryPath);
+      if (!project) {
+        project = projectRecord(config.repositoryPath, config);
+        this.store.saveProject(project);
+      }
+    }
     const definitions = await loadTasks(config.taskPath, input.taskIds);
     const timestamp = new Date().toISOString();
     const plan: PlanRecord = {
       id: randomUUID(),
       name: input.name.trim() || definitions[0]!.title,
+      projectId: project.id,
+      storageDirectory: path.join(config.repositoryPath, '.ai-flow'),
       status: 'queued',
       config,
       tasks: definitions.map((task) => ({
@@ -133,6 +238,7 @@ export class FlowController {
       baseCommit: await git(config.repositoryPath, ['rev-parse', 'HEAD']),
       integrationChecks: [],
     };
+    plan.artifactsPath = path.join(plan.storageDirectory!, 'runs', plan.id);
     this.store.savePlan(plan);
     this.event(
       plan.id,
@@ -166,9 +272,18 @@ export class FlowController {
   }
 
   start(id: string): PlanRecord {
-    if (this.active)
-      throw new Error('Another run is active. Pause or finish it before starting this run.');
+    if (this.removing.has(id)) throw new Error('This workflow is being removed.');
     const plan = this.requirePlan(id);
+    if (
+      [...this.active.values()].some(
+        (run) =>
+          run.plan.projectId === plan.projectId ||
+          run.plan.config.repositoryPath === plan.config.repositoryPath,
+      )
+    )
+      throw new Error(
+        'Another run is active in this project. Pause or finish it before starting this run.',
+      );
     if (!['queued', 'paused', 'needs_attention'].includes(plan.status))
       throw new Error(`Cannot start a ${plan.status} run.`);
     if (plan.elapsedMs >= plan.config.limits.maxRunMinutes * 60_000)
@@ -185,7 +300,7 @@ export class FlowController {
       stop: null,
       done: Promise.resolve(),
     };
-    this.active = run;
+    this.active.set(id, run);
     this.event(
       id,
       null,
@@ -194,16 +309,17 @@ export class FlowController {
       'Run started. The controller will implement, verify, review, and repair each task in dependency order.',
     );
     run.done = this.execute(run).finally(() => {
-      if (this.active === run) this.active = null;
+      if (this.active.get(id) === run) this.active.delete(id);
     });
     return plan;
   }
 
   stop(id: string, action: 'pause' | 'cancel'): PlanRecord {
     const plan = this.requirePlan(id);
-    if (this.active?.plan.id === id) {
-      this.active.stop = action;
-      this.active.abort.abort();
+    const active = this.active.get(id);
+    if (active) {
+      active.stop = action;
+      active.abort.abort();
       this.event(
         id,
         null,
@@ -211,7 +327,7 @@ export class FlowController {
         'state',
         `${action === 'pause' ? 'Pausing' : 'Cancelling'} run; stopping active agent and check processes.`,
       );
-      return this.active.plan;
+      return active.plan;
     }
     if (action === 'cancel' && !['completed', 'cancelled'].includes(plan.status)) {
       plan.status = 'cancelled';
@@ -251,16 +367,40 @@ export class FlowController {
     return plan;
   }
 
+  async removePlan(id: string): Promise<{ removed: string }> {
+    this.requirePlan(id);
+    if (this.removing.has(id)) throw new Error('This workflow is being removed.');
+    this.removing.add(id);
+    try {
+      const active = this.active.get(id);
+      if (active) {
+        this.stop(id, 'cancel');
+        await active.done;
+      }
+      this.store.removePlan(id);
+      this.event(
+        null,
+        null,
+        'controller',
+        'state',
+        'Workflow removed from the dashboard. Project files and commits retained.',
+      );
+      return { removed: id };
+    } finally {
+      this.removing.delete(id);
+    }
+  }
+
   async waitForIdle(): Promise<void> {
-    await this.active?.done;
+    await Promise.all([...this.active.values()].map((run) => run.done));
   }
 
   async shutdown(): Promise<void> {
-    if (this.active) {
-      this.active.stop = 'pause';
-      this.active.abort.abort();
-      await this.active.done;
+    for (const run of this.active.values()) {
+      run.stop = 'pause';
+      run.abort.abort();
     }
+    await this.waitForIdle();
     this.store.events.emit('shutdown');
   }
 
@@ -309,7 +449,7 @@ export class FlowController {
     }, 1000);
     try {
       const signal = run.abort.signal;
-      await preparePlanWorkspace(plan, this.store.directory, signal);
+      await preparePlanWorkspace(plan, plan.storageDirectory || this.store.directory, signal);
       this.store.savePlan(plan);
       this.event(
         plan.id,
@@ -336,7 +476,12 @@ export class FlowController {
         );
         if (missing.length)
           throw new Error(`Task ${task.id} is waiting for dependencies: ${missing.join(', ')}.`);
-        await prepareTaskWorkspace(plan, task, this.store.directory, signal);
+        await prepareTaskWorkspace(
+          plan,
+          task,
+          plan.storageDirectory || this.store.directory,
+          signal,
+        );
         this.store.savePlan(plan);
         await this.executeTask(run, task);
       }
@@ -408,14 +553,21 @@ export class FlowController {
             ? `Verifier failures to fix:\n${failedChecks.map((check) => `${check.command}\n${check.output}`).join('\n\n')}`
             : '',
           `Required checks: ${plan.config.checks.map((check) => check.command).join('; ')}`,
-          'Finish with a concise summary of changes, tests added, and review findings addressed.',
+          'Read and follow the applicable project AGENTS.md, AGENTS.override.md, nested guidance, and local skills before changing files. Follow the project commit-message convention and finish with a concise summary plus a single line: Commit title: <short description of the actual change>.',
         ]
           .filter(Boolean)
           .join('\n\n');
-        await this.invoke(run, task.id, 'implementer', task.round, task.workspacePath!, prompt);
+        const implementation = await this.invoke(
+          run,
+          task.id,
+          'implementer',
+          task.round,
+          task.workspacePath!,
+          prompt,
+        );
         task.candidateCommit = await checkpoint(
           task.workspacePath!,
-          `AI Flow: ${task.id} round ${task.round}`,
+          commitTitle(task.title, implementation.text, Boolean(task.candidateCommit)),
           signal,
         );
         task.status = 'checking';
@@ -571,7 +723,7 @@ export class FlowController {
         );
         plan.finalCommit = await checkpoint(
           plan.workspacePath!,
-          'AI Flow: repair combined plan',
+          commitTitle(`Repair ${plan.name}`, undefined, true),
           signal,
         );
         this.store.savePlan(plan);
@@ -738,7 +890,13 @@ export class FlowController {
     commit: string,
     verdict: ReviewVerdict,
   ): Promise<ReviewRecord> {
-    const directory = path.join(this.store.directory, 'reports', plan.id, taskId);
+    const directory = plan.artifactsPath
+      ? path.join(
+          plan.artifactsPath,
+          taskId === '__plan__' ? 'final' : path.join('tasks', taskId),
+          'reports',
+        )
+      : path.join(this.store.directory, 'reports', plan.id, taskId);
     await mkdir(directory, { recursive: true });
     const id = randomUUID();
     const markdownPath = path.join(
@@ -777,7 +935,13 @@ export class FlowController {
     fix: number,
     checks: TaskRecord['checks'],
   ): Promise<void> {
-    const directory = path.join(this.store.directory, 'reports', plan.id, taskId);
+    const directory = plan.artifactsPath
+      ? path.join(
+          plan.artifactsPath,
+          taskId === '__plan__' ? 'final' : path.join('tasks', taskId),
+          'reports',
+        )
+      : path.join(this.store.directory, 'reports', plan.id, taskId);
     await mkdir(directory, { recursive: true });
     await writeFile(
       path.join(directory, `checks-round-${round}-attempt-${fix}-${randomUUID().slice(0, 8)}.json`),

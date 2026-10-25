@@ -49,6 +49,59 @@ describe('local controller API', () => {
     expect(response.status).toBe(403);
   });
 
+  it('registers projects, browses directories, captures project settings, and removes workflows over HTTP', async () => {
+    const plan = await application.flow.createDemo();
+    const post = (url: string, value: unknown, method = 'POST') =>
+      fetch(origin + '/api' + url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(value),
+      });
+    const projects = await (await fetch(origin + '/api/projects')).json();
+    expect(projects.some((project: { id: string }) => project.id === plan.projectId)).toBe(true);
+    const duplicate = await post('/projects', {
+      repositoryPath: plan.config.repositoryPath,
+      name: 'Same project',
+    });
+    expect((await duplicate.json()).id).toBe(plan.projectId);
+    const listing = await (
+      await fetch(
+        origin +
+          '/api/directories?path=' +
+          encodeURIComponent(path.dirname(plan.config.repositoryPath)),
+      )
+    ).json();
+    expect(listing.directories.some((item: { name: string }) => item.name === 'repository')).toBe(
+      true,
+    );
+    expect((await post('/projects', { repositoryPath: 'relative' })).status).toBe(400);
+    const saved = await post(
+      `/projects/${plan.projectId}`,
+      { name: 'Updated project', config: plan.config },
+      'PUT',
+    );
+    expect((await saved.json()).name).toBe('Updated project');
+    const captured = await post('/plans', {
+      name: 'Project workflow',
+      projectId: plan.projectId,
+      taskIds: ['greeting'],
+    });
+    const created = await captured.json();
+    expect(captured.status).toBe(201);
+    expect(created.projectId).toBe(plan.projectId);
+    expect(created.config).toEqual(plan.config);
+    expect((await post('/plans', { name: 'Invalid project', projectId: 'missing' })).status).toBe(
+      400,
+    );
+    expect((await fetch(origin + `/api/plans/${created.id}`, { method: 'DELETE' })).status).toBe(
+      200,
+    );
+    expect((await fetch(origin + `/api/plans/${created.id}`)).status).toBe(400);
+    const state = await (await fetch(origin + '/api/state')).json();
+    expect(state.plans.some((item: { id: string }) => item.id === created.id)).toBe(false);
+    expect(Array.isArray(state.activePlanIds)).toBe(true);
+  });
+
   it('creates a run, exposes logs, cancels queued work, and prevents starting cancelled work', async () => {
     const created = await fetch(origin + '/api/demo', {
       method: 'POST',
